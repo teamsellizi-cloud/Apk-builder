@@ -37,6 +37,11 @@ on:
         description: 'Signed Download URL for ZIP Source'
         required: false
         type: string
+      icon_download_url:
+        description: 'Signed Download URL for the app icon'
+        required: false
+        default: ''
+        type: string
       apk_upload_url:
         description: 'Signed Upload URL for Direct Supabase Storage Upload'
         required: true
@@ -111,12 +116,17 @@ jobs:
           SOURCE_URL: ${{ inputs.source_url }}
           ZIP_DOWNLOAD_URL: ${{ inputs.zip_download_url }}
           CONFIG_JSON: ${{ inputs.config_json }}
+          ICON_DOWNLOAD_URL: ${{ inputs.icon_download_url }}
           CALLBACK_URL: ${{ inputs.callback_url }}
           CALLBACK_TOKEN: ${{ inputs.callback_token }}
         run: |
           set -e
           mkdir -p workspace
           cd workspace
+
+          if [ -n "$ICON_DOWNLOAD_URL" ]; then
+            curl -fsSL "$ICON_DOWNLOAD_URL" -o icon_payload.txt || echo "Warning: could not download the app icon"
+          fi
 
           # Run Node.js configurator to create project files and apply full customization
           cat << 'EOF' > configure_app.js
@@ -136,6 +146,15 @@ jobs:
             config = JSON.parse(process.env.CONFIG_JSON || '{}');
           } catch (e) {
             console.warn('Could not parse CONFIG_JSON, using fallback configuration');
+          }
+
+          try {
+            if (fs.existsSync('icon_payload.txt')) {
+              const iconPayload = fs.readFileSync('icon_payload.txt', 'utf8').trim();
+              if (iconPayload.startsWith('data:image/')) config.iconDataUrl = iconPayload;
+            }
+          } catch (e) {
+            console.warn('Could not read the downloaded app icon');
           }
 
           console.log(`Configuring project: ${appName} (${packageId} v${versionName})`);

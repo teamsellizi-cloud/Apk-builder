@@ -171,6 +171,15 @@ export async function executeBuildJob(params: StartBuildParams) {
     zipDownloadUrl = `${originUrl || "http://localhost:3000"}/api/builds/${id}/download-zip?token=${token}`;
   }
 
+  // GitHub limits workflow inputs to ~65 KB, so a base64 icon is sent as a signed download link
+  let iconDownloadUrl: string | undefined;
+  let runnerConfig = config;
+  if (typeof config.iconDataUrl === "string" && config.iconDataUrl.startsWith("data:")) {
+    const { token: iconToken } = generateSignedDownloadToken(id, 120);
+    iconDownloadUrl = `${originUrl || "http://localhost:3000"}/api/builds/${id}/icon?token=${iconToken}`;
+    runnerConfig = { ...config, iconDataUrl: undefined };
+  }
+
   // Dispatch build to GitHub Actions
   const ghResult = await triggerGitHubBuild(
     {
@@ -188,8 +197,9 @@ export async function executeBuildJob(params: StartBuildParams) {
       versionCode,
       sourceUrl,
       zipDownloadUrl,
+      iconDownloadUrl,
       apkUploadUrl,
-      configJson: JSON.stringify(config),
+      configJson: JSON.stringify(runnerConfig),
       callbackUrl,
       callbackToken,
     }

@@ -9,6 +9,7 @@ export interface TriggerWorkflowParams {
   versionCode: number;
   sourceUrl?: string;
   zipDownloadUrl?: string;
+  iconDownloadUrl?: string;
   apkUploadUrl: string;
   configJson: string;
   callbackUrl: string;
@@ -115,6 +116,7 @@ export async function triggerGitHubBuild(
             version_code: String(params.versionCode),
             source_url: params.sourceUrl || "",
             zip_download_url: params.zipDownloadUrl || "",
+            icon_download_url: params.iconDownloadUrl || "",
             apk_upload_url: params.apkUploadUrl,
             config_json: params.configJson,
             callback_url: params.callbackUrl,
