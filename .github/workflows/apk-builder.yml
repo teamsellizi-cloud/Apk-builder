@@ -1,0 +1,434 @@
+name: APK Builder Cloud Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: 'Unique Build ID'
+        required: true
+        type: string
+      build_type:
+        description: 'Conversion Type (website, zip, pwa)'
+        required: true
+        type: string
+      app_name:
+        description: 'Application Name'
+        required: true
+        type: string
+      package_id:
+        description: 'Package Identifier (e.g. com.example.app)'
+        required: true
+        type: string
+      version_name:
+        description: 'Version Name'
+        required: true
+        default: '1.0.0'
+        type: string
+      version_code:
+        description: 'Version Code'
+        required: true
+        default: '1'
+        type: string
+      source_url:
+        description: 'Target Website or PWA URL'
+        required: false
+        type: string
+      zip_download_url:
+        description: 'Signed Download URL for ZIP Source'
+        required: false
+        type: string
+      apk_upload_url:
+        description: 'Signed Upload URL for Direct Supabase Storage Upload'
+        required: true
+        type: string
+      config_json:
+        description: 'App Customization JSON'
+        required: true
+        type: string
+      callback_url:
+        description: 'Webhook Endpoint for reporting status and logs'
+        required: true
+        type: string
+      callback_token:
+        description: 'Secure Webhook Authentication Token'
+        required: true
+        type: string
+
+jobs:
+  # ============================================================================
+  # JOB 1: Isolated Untrusted Compilation (NO ACCESS TO SECRETS OR KEYSTORES)
+  # ============================================================================
+  compile-untrusted-apk:
+    name: Compile Android Project & Bytecode
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Build Tools
+        run: |
+          npm install -g @capacitor/cli@^6.0.0 @capacitor/android@^6.0.0 @bubblewrap/cli@^1.19.0
+
+      - name: Report Build Started
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          curl -s -X POST "$CALLBACK_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $CALLBACK_TOKEN" \
+            -d '{"status":"building","progress":20,"step":"Initializing native Android project structure"}'
+
+      - name: Generate Project, Apply Customizations & Extract Sources
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+          BUILD_TYPE: ${{ inputs.build_type }}
+          APP_NAME: ${{ inputs.app_name }}
+          PACKAGE_ID: ${{ inputs.package_id }}
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          SOURCE_URL: ${{ inputs.source_url }}
+          ZIP_DOWNLOAD_URL: ${{ inputs.zip_download_url }}
+          CONFIG_JSON: ${{ inputs.config_json }}
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          set -e
+          mkdir -p workspace
+          cd workspace
+
+          # Run Node.js configurator to create project files and apply full customization
+          cat << 'EOF' > configure_app.js
+          const fs = require('fs');
+          const path = require('path');
+          const { execSync } = require('child_process');
+
+          const buildType = process.env.BUILD_TYPE;
+          const appName = process.env.APP_NAME || 'My App';
+          const packageId = process.env.PACKAGE_ID || 'com.example.app';
+          const versionName = process.env.VERSION_NAME || '1.0.0';
+          const versionCode = process.env.VERSION_CODE || '1';
+          const sourceUrl = process.env.SOURCE_URL || '';
+          let config = {};
+
+          try {
+            config = JSON.parse(process.env.CONFIG_JSON || '{}');
+          } catch (e) {
+            console.warn('Could not parse CONFIG_JSON, using fallback configuration');
+          }
+
+          console.log(`Configuring project: ${appName} (${packageId} v${versionName})`);
+
+          // 1. Initialize Capacitor Base Package
+          fs.writeFileSync('package.json', JSON.stringify({
+            name: packageId.replace(/[^a-z0-9]/gi, '-').toLowerCase(),
+            version: versionName,
+            private: true,
+            dependencies: {
+              '@capacitor/core': '^6.0.0',
+              '@capacitor/android': '^6.0.0'
+            }
+          }, null, 2));
+
+          execSync('npm install --no-audit --no-fund', { stdio: 'inherit' });
+
+          // 2. Configure Capacitor JSON
+          const capConfig = {
+            appId: packageId,
+            appName: appName,
+            webDir: 'www',
+            bundledWebRuntime: false,
+            server: {
+              url: buildType === 'website' && sourceUrl ? sourceUrl : undefined,
+              cleartext: Boolean(config.cleartextTraffic),
+              androidScheme: 'https'
+            },
+            android: {
+              allowMixedContent: Boolean(config.cleartextTraffic)
+            }
+          };
+
+          fs.writeFileSync('capacitor.config.json', JSON.stringify(capConfig, null, 2));
+          fs.mkdirSync('www', { recursive: true });
+
+          if (buildType === 'website') {
+            fs.writeFileSync('www/index.html', `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${appName}</title><style>body{font-family:sans-serif;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}</style></head><body><h1>Loading ${appName}...</h1></body></html>`);
+          }
+
+          // 3. Add Android Native Project
+          execSync('npx cap add android', { stdio: 'inherit' });
+
+          // 4. Inject Native Customizations: AndroidManifest.xml, colors.xml, styles.xml
+          const androidDir = path.join('android', 'app', 'src', 'main');
+          const manifestPath = path.join(androidDir, 'AndroidManifest.xml');
+          const resValuesDir = path.join(androidDir, 'res', 'values');
+
+          fs.mkdirSync(resValuesDir, { recursive: true });
+
+          // Colors
+          const themeColor = config.themeColor || '#2563eb';
+          const statusBarColor = config.statusBarColor || '#1e293b';
+          const navBarColor = config.navBarColor || '#0f172a';
+          const splashBgColor = config.splashBgColor || '#0f172a';
+
+          const colorsXml = `<?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="colorPrimary">${themeColor}</color>
+              <color name="colorPrimaryDark">${statusBarColor}</color>
+              <color name="colorAccent">${themeColor}</color>
+              <color name="navigationBarColor">${navBarColor}</color>
+              <color name="splashBackgroundColor">${splashBgColor}</color>
+          </resources>`;
+          fs.writeFileSync(path.join(resValuesDir, 'colors.xml'), colorsXml);
+
+          // Styles
+          const stylesXml = `<?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="Theme.AppCompat.Light.DarkActionBar">
+                  <item name="colorPrimary">@color/colorPrimary</item>
+                  <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
+                  <item name="colorAccent">@color/colorAccent</item>
+              </style>
+              <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.DayNight.NoActionBar">
+                  <item name="windowActionBar">false</item>
+                  <item name="windowNoTitle">true</item>
+                  <item name="android:statusBarColor">@color/colorPrimaryDark</item>
+                  <item name="android:navigationBarColor">@color/navigationBarColor</item>
+                  ${config.fullscreen ? '<item name="android:windowFullscreen">true</item>' : ''}
+              </style>
+              <style name="AppTheme.NoActionBarLaunch" parent="AppTheme.NoActionBar">
+                  <item name="android:background">@color/splashBackgroundColor</item>
+              </style>
+          </resources>`;
+          fs.writeFileSync(path.join(resValuesDir, 'styles.xml'), stylesXml);
+
+          // Permissions
+          const perms = config.permissions || {};
+          const permissionsTags = [
+            '<uses-permission android:name="android.permission.INTERNET" />',
+            perms.camera ? '<uses-permission android:name="android.permission.CAMERA" />' : '',
+            perms.geolocation ? '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />' : '',
+            perms.storage ? '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />' : '',
+            perms.microphone ? '<uses-permission android:name="android.permission.RECORD_AUDIO" />' : '',
+            perms.notifications ? '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />' : '',
+            perms.biometrics ? '<uses-permission android:name="android.permission.USE_BIOMETRIC" />' : '',
+          ].filter(Boolean).join('\n    ');
+
+          // Orientation attribute
+          let orientationAttr = 'android:screenOrientation="unspecified"';
+          if (config.orientation === 'portrait') orientationAttr = 'android:screenOrientation="portrait"';
+          else if (config.orientation === 'landscape') orientationAttr = 'android:screenOrientation="landscape"';
+          else if (config.orientation === 'sensorPortrait') orientationAttr = 'android:screenOrientation="sensorPortrait"';
+
+          // Patch AndroidManifest.xml
+          let manifest = fs.readFileSync(manifestPath, 'utf8');
+          manifest = manifest.replace('<application', `${permissionsTags}\n    <application`);
+          manifest = manifest.replace('<activity', `<activity ${orientationAttr}`);
+          if (config.cleartextTraffic) {
+            manifest = manifest.replace('<application', '<application android:usesCleartextTraffic="true"');
+          }
+          fs.writeFileSync(manifestPath, manifest);
+
+          // Custom Launcher Icon if base64 provided
+          if (config.iconDataUrl && config.iconDataUrl.startsWith('data:image/')) {
+            try {
+              const base64Data = config.iconDataUrl.split(',')[1];
+              const iconBuffer = Buffer.from(base64Data, 'base64');
+              const mipmapDirs = ['mipmap-mdpi', 'mipmap-hdpi', 'mipmap-xhdpi', 'mipmap-xxhdpi', 'mipmap-xxxhdpi'];
+              for (const mDir of mipmapDirs) {
+                const targetDir = path.join(androidDir, 'res', mDir);
+                fs.mkdirSync(targetDir, { recursive: true });
+                fs.writeFileSync(path.join(targetDir, 'ic_launcher.png'), iconBuffer);
+                fs.writeFileSync(path.join(targetDir, 'ic_launcher_round.png'), iconBuffer);
+              }
+              console.log('Custom launcher icons written across all mipmap densities.');
+            } catch (err) {
+              console.warn('Failed to write launcher icon:', err);
+            }
+          }
+
+          console.log('Native Android customization injected successfully.');
+          EOF
+
+          node configure_app.js
+
+          # Handle ZIP builds
+          if [ "$BUILD_TYPE" = "zip" ] && [ -n "$ZIP_DOWNLOAD_URL" ]; then
+            echo "Downloading ZIP project source..."
+            curl -sSL "$ZIP_DOWNLOAD_URL" -o project_src.zip
+            mkdir -p extracted_src
+            unzip -q project_src.zip -d extracted_src/
+
+            cd extracted_src
+            if [ -f "package.json" ]; then
+              echo "Installing dependencies with npm ci --ignore-scripts..."
+              npm ci --ignore-scripts || npm install --ignore-scripts
+              if grep -q '"build":' package.json; then
+                echo "Running build step..."
+                npm run build
+              fi
+            fi
+
+            DIST_DIR=""
+            if [ -d "dist" ]; then DIST_DIR="dist";
+            elif [ -d "build" ]; then DIST_DIR="build";
+            elif [ -d "out" ]; then DIST_DIR="out";
+            elif [ -f "index.html" ]; then DIST_DIR=".";
+            fi
+
+            cd ..
+            if [ -n "$DIST_DIR" ]; then
+              cp -r extracted_src/$DIST_DIR/* www/
+            fi
+            npx cap sync android
+          elif [ "$BUILD_TYPE" = "pwa" ]; then
+            echo "Building PWA / TWA project..."
+            npx cap sync android
+          else
+            npx cap sync android
+          fi
+
+      - name: Report Build Step (Compiling)
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          curl -s -X POST "$CALLBACK_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $CALLBACK_TOKEN" \
+            -d '{"status":"building","progress":60,"step":"Compiling release Android bytecode with Gradle"}'
+
+      - name: Compile Release APK with Gradle
+        run: |
+          set -e
+          cd workspace/android
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --stacktrace
+
+      - name: Save Unsigned APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-apk
+          path: workspace/android/app/build/outputs/apk/release/*.apk
+          retention-days: 1
+
+  # ============================================================================
+  # JOB 2: Isolated Signing & Direct Storage Upload (HAS ACCESS TO SECRETS)
+  # ============================================================================
+  sign-and-upload-apk:
+    name: Sign APK with Keystore & Upload to Private Storage
+    needs: compile-untrusted-apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download Unsigned APK
+        uses: actions/download-artifact@v4
+        with:
+          name: unsigned-apk
+          path: release-build/
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK Build-Tools
+        uses: android-actions/setup-android@v3
+
+      - name: Verify Signing Secrets & Execute apksigner
+        id: sign
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          APK_UPLOAD_URL: ${{ inputs.apk_upload_url }}
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          set -e
+
+          # 1. Strict Keystore Secret Check: Fail with clear error if secrets are missing!
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "ERROR: Missing required Android Keystore secrets in GitHub Actions repository."
+            echo "Please configure ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, and ANDROID_KEY_ALIAS in GitHub Secrets."
+
+            curl -s -X POST "$CALLBACK_URL" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $CALLBACK_TOKEN" \
+              -d '{"status":"failed","progress":0,"step":"Signing failed","error":"Missing ANDROID_KEYSTORE_BASE64 or ANDROID_KEYSTORE_PASSWORD in GitHub repository secrets. Please configure signing keys in repository settings."}'
+
+            exit 1
+          fi
+
+          UNSIGNED_APK=$(find release-build -name "*.apk" | head -n 1)
+          if [ -z "$UNSIGNED_APK" ] || [ ! -f "$UNSIGNED_APK" ]; then
+            echo "ERROR: Unsigned APK artifact not found!"
+            exit 1
+          fi
+
+          echo "Decoding release keystore..."
+          echo "$KEYSTORE_BASE64" | base64 --decode > release.keystore
+
+          # 2. Memory alignment with zipalign (4-byte alignment)
+          zipalign -v -p 4 "$UNSIGNED_APK" aligned-release.apk
+
+          # 3. Digital Signature with apksigner (v1 + v2 + v3)
+          KEY_PASS="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+          KEY_AL="${KEY_ALIAS:-apkbuilder-release-key}"
+
+          apksigner sign --ks release.keystore \
+            --ks-pass pass:"$KEYSTORE_PASSWORD" \
+            --ks-key-alias "$KEY_AL" \
+            --key-pass pass:"$KEY_PASS" \
+            --out final-signed-release.apk aligned-release.apk
+
+          # Verify signature
+          apksigner verify --verbose final-signed-release.apk
+          echo "APK successfully signed and verified with apksigner."
+
+          # 4. Upload DIRECTLY to Supabase Private Storage via Signed Upload URL (Bypasses Vercel payload limits!)
+          APK_SIZE=$(stat -c%s final-signed-release.apk)
+          APK_SHA256=$(sha256sum final-signed-release.apk | awk '{print $1}')
+
+          echo "Uploading signed APK directly to Supabase storage (${APK_SIZE} bytes)..."
+          curl -f -s -X PUT "$APK_UPLOAD_URL" \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            --data-binary "@final-signed-release.apk"
+
+          echo "Direct upload to Supabase storage complete."
+
+          # 5. Send Completion Webhook (Metadata only, no large base64 body!)
+          curl -s -X POST "$CALLBACK_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $CALLBACK_TOKEN" \
+            -d "{\"status\":\"completed\",\"progress\":100,\"step\":\"Build completed and signed successfully\",\"apkFileSize\":$APK_SIZE,\"apkSha256\":\"$APK_SHA256\"}"
+
+      - name: Report Failure on Error
+        if: failure()
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          curl -s -X POST "$CALLBACK_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $CALLBACK_TOKEN" \
+            -d '{"status":"failed","progress":0,"step":"Build execution failed","error":"Compilation or apksigner signing failed. Check GitHub Actions workflow logs."}'
