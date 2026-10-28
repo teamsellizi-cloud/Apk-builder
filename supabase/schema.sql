@@ -1,11 +1,21 @@
 -- ========================================================
--- devs APK Builder - Supabase Postgres Schema & RLS
+-- devs APK Builder - Supabase Postgres schema
+-- Safe to run more than once.
+-- The app connects with DATABASE_URL (server side), so tables use
+-- RLS with NO public policies: nothing is reachable through Supabase's
+-- public API with the anon key.
 -- ========================================================
 
--- Enable UUID extension
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- 1. Users (single admin account, created on first login)
+CREATE TABLE IF NOT EXISTS public.users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
 
--- 1. App Settings Table
+-- 2. App settings
 CREATE TABLE IF NOT EXISTS public.app_settings (
     id TEXT PRIMARY KEY DEFAULT 'default',
     github_repo TEXT,
@@ -16,14 +26,14 @@ CREATE TABLE IF NOT EXISTS public.app_settings (
     keystore_configured BOOLEAN DEFAULT false,
     retention_days INTEGER DEFAULT 14,
     callback_secret TEXT NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
 
--- 2. Builds Table
+-- 3. Builds
 CREATE TABLE IF NOT EXISTS public.builds (
     id TEXT PRIMARY KEY,
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT,
     app_name TEXT NOT NULL,
     package_id TEXT NOT NULL,
     version_name TEXT DEFAULT '1.0.0' NOT NULL,
@@ -33,13 +43,14 @@ CREATE TABLE IF NOT EXISTS public.builds (
     zip_file_name TEXT,
     zip_file_size INTEGER,
     zip_storage_path TEXT,
-    status TEXT DEFAULT 'pending' NOT NULL CHECK (status IN ('pending', 'queued', 'validating', 'building', 'signing', 'completed', 'failed', 'cancelled')),
+    status TEXT DEFAULT 'pending' NOT NULL
+      CHECK (status IN ('pending','queued','validating','building','signing','completed','failed','cancelled')),
     progress_percent INTEGER DEFAULT 0 NOT NULL,
     current_step TEXT,
     error_message TEXT,
     app_icon_url TEXT,
-    config_json JSONB NOT NULL,
-    manifest_json JSONB,
+    config_json TEXT NOT NULL,
+    manifest_json TEXT,
     logs TEXT DEFAULT '' NOT NULL,
     github_run_id TEXT,
     github_run_url TEXT,
@@ -48,85 +59,29 @@ CREATE TABLE IF NOT EXISTS public.builds (
     apk_sha256 TEXT,
     apk_storage_path TEXT,
     retry_count INTEGER DEFAULT 0 NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
-    completed_at TIMESTAMP WITH TIME ZONE
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    completed_at TIMESTAMPTZ
 );
 
--- ========================================================
--- Row Level Security (RLS) Policies
--- ========================================================
+-- 4. Remove old open policies from earlier versions of this file
+DROP POLICY IF EXISTS "Allow authenticated owner all actions on app_settings" ON public.app_settings;
+DROP POLICY IF EXISTS "Users can view their own builds" ON public.builds;
+DROP POLICY IF EXISTS "Users can insert their own builds" ON public.builds;
+DROP POLICY IF EXISTS "Users can update their own builds" ON public.builds;
+DROP POLICY IF EXISTS "Users can delete their own builds" ON public.builds;
+DROP POLICY IF EXISTS "Private APK access for owner" ON storage.objects;
 
+-- 5. Lock tables (RLS on, no public policies)
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.builds ENABLE ROW LEVEL SECURITY;
 
--- Policy: Single-User Access to App Settings (Authenticated users only)
-CREATE POLICY "Allow authenticated owner all actions on app_settings"
-    ON public.app_settings
-    FOR ALL
-    TO authenticated
-    USING (true)
-    WITH CHECK (true);
-
--- Policy: Builds table access (Authenticated users only can see/manage their builds)
-CREATE POLICY "Users can view their own builds"
-    ON public.builds
-    FOR SELECT
-    TO authenticated
-    USING (auth.uid() = user_id OR user_id IS NULL);
-
-CREATE POLICY "Users can insert their own builds"
-    ON public.builds
-    FOR INSERT
-    TO authenticated
-    WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
-
-CREATE POLICY "Users can update their own builds"
-    ON public.builds
-    FOR UPDATE
-    TO authenticated
-    USING (auth.uid() = user_id OR user_id IS NULL)
-    WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
-
-CREATE POLICY "Users can delete their own builds"
-    ON public.builds
-    FOR DELETE
-    TO authenticated
-    USING (auth.uid() = user_id OR user_id IS NULL);
-
--- ========================================================
--- Supabase Storage Buckets & Policies
--- ========================================================
-
--- Insert private buckets for uploaded ZIP sources and generated APK artifacts
+-- 6. Private storage buckets (accessed with the service role key)
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES 
-    ('apk-artifacts', 'apk-artifacts', false, 104857600, ARRAY['application/vnd.android.package-archive', 'application/zip']),
-    ('zip-sources', 'zip-sources', false, 52428800, ARRAY['application/zip', 'application/x-zip-compressed'])
+VALUES
+    ('apk-artifacts', 'apk-artifacts', false, 104857600,
+     ARRAY['application/vnd.android.package-archive', 'application/zip']),
+    ('zip-sources', 'zip-sources', false, 52428800,
+     ARRAY['application/zip', 'application/x-zip-compressed'])
 ON CONFLICT (id) DO NOTHING;
-
--- Storage RLS: Restrict APK and ZIP storage access to authenticated user
-CREATE POLICY "Private APK access for owner"
-    ON storage.objects
-    FOR ALL
-    TO authenticated
-    USING (bucket_id IN ('apk-artifacts', 'zip-sources'))
-    WITH CHECK (bucket_id IN ('apk-artifacts', 'zip-sources'));
-
--- Retention Auto-Cleanup Helper Function
-CREATE OR REPLACE FUNCTION public.cleanup_expired_build_artifacts()
-RETURNS INTEGER AS $$
-DECLARE
-    deleted_count INTEGER;
-BEGIN
-    WITH target_builds AS (
-        SELECT id FROM public.builds
-        WHERE created_at < NOW() - INTERVAL '14 days'
-    )
-    DELETE FROM public.builds
-    WHERE id IN (SELECT id FROM target_builds);
-    
-    GET DIAGNOSTICS deleted_count = ROW_COUNT;
-    RETURN deleted_count;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
