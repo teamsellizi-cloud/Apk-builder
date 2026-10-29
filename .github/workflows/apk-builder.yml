@@ -515,7 +515,11 @@ jobs:
           RAN_BUILD=0
           if [ -f package.json ]; then
             echo "Installing dependencies (install scripts are disabled)..."
-            npm ci --ignore-scripts || npm install --ignore-scripts
+            if [ -f package-lock.json ]; then
+              npm ci --ignore-scripts || npm install --ignore-scripts
+            else
+              npm install --ignore-scripts
+            fi
             if node -e "const s=require('./package.json').scripts||{};process.exit(s.build?0:1)"; then
               echo "Running the build step..."
               npm run build

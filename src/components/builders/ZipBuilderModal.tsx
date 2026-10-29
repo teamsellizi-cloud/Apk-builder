@@ -51,28 +51,63 @@ export const ZipBuilderModal: React.FC<ZipBuilderModalProps> = ({
   if (!isOpen) return null;
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const input = e.target;
+    const picked = input.files?.[0];
+    if (!picked) return;
 
-    if (!file.name.toLowerCase().endsWith(".zip")) {
+    if (!picked.name.toLowerCase().endsWith(".zip")) {
       setErrorMessage("Please select a valid .zip archive file.");
       return;
     }
 
-    setSelectedFile(file);
     setIsAnalyzing(true);
     setErrorMessage(null);
     setAnalysis(null);
+
+    // Read the whole file into memory first. Android can revoke access to a picked file
+    // (or report that it "changed") while it is uploading, which looks like a network error.
+    let file: File;
+    try {
+      const bytes = await picked.arrayBuffer();
+      file = new File([bytes], picked.name, { type: "application/zip" });
+      // Let the same file be picked again later (for example after fixing it)
+      input.value = "";
+    } catch {
+      setSelectedFile(null);
+      setErrorMessage(
+        "Your phone could not read this file. Move it to the Downloads folder (not Drive or Recent), then pick it again."
+      );
+      setIsAnalyzing(false);
+      return;
+    }
+    setSelectedFile(file);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
 
-      const res = await fetch("/api/analyze/zip", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await res.json();
+      let res: Response;
+      try {
+        res = await fetch("/api/analyze/zip", {
+          method: "POST",
+          body: formData,
+        });
+      } catch {
+        setErrorMessage("Could not reach the server. Check your internet connection and try again.");
+        return;
+      }
+
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        setErrorMessage(
+          res.status === 413
+            ? "This ZIP is too large for the server to accept in one request."
+            : `The server sent an unexpected reply (status ${res.status}). Try again in a moment.`
+        );
+        return;
+      }
 
       if (data.analysis) {
         setAnalysis(data.analysis);
@@ -93,8 +128,8 @@ export const ZipBuilderModal: React.FC<ZipBuilderModalProps> = ({
       } else {
         setErrorMessage(data.error || "Failed to analyze ZIP file.");
       }
-    } catch {
-      setErrorMessage("Network error while inspecting ZIP file.");
+    } catch (err) {
+      setErrorMessage(`Could not inspect the ZIP file${err instanceof Error && err.message ? `: ${err.message}` : "."}`);
     } finally {
       setIsAnalyzing(false);
     }
