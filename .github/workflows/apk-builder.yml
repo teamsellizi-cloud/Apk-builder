@@ -71,6 +71,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Java JDK 17
         uses: actions/setup-java@v4
@@ -182,7 +184,7 @@ jobs:
             webDir: 'www',
             bundledWebRuntime: false,
             server: {
-              url: buildType === 'website' && sourceUrl ? sourceUrl : undefined,
+              url: (buildType === 'website' || buildType === 'pwa') && sourceUrl ? sourceUrl : undefined,
               cleartext: Boolean(config.cleartextTraffic),
               androidScheme: 'https'
             },
@@ -194,7 +196,7 @@ jobs:
           fs.writeFileSync('capacitor.config.json', JSON.stringify(capConfig, null, 2));
           fs.mkdirSync('www', { recursive: true });
 
-          if (buildType === 'website') {
+          if (!fs.existsSync('www/index.html')) {
             fs.writeFileSync('www/index.html', `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${appName}</title><style>body{font-family:sans-serif;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}</style></head><body><h1>Loading ${appName}...</h1></body></html>`);
           }
 
@@ -470,41 +472,77 @@ jobs:
 
           node configure_app.js
 
-          # Handle ZIP builds
-          if [ "$BUILD_TYPE" = "zip" ] && [ -n "$ZIP_DOWNLOAD_URL" ]; then
-            echo "Downloading ZIP project source..."
-            curl -sSL "$ZIP_DOWNLOAD_URL" -o project_src.zip
-            mkdir -p extracted_src
-            unzip -q project_src.zip -d extracted_src/
-
-            cd extracted_src
-            if [ -f "package.json" ]; then
-              echo "Installing dependencies with npm ci --ignore-scripts..."
-              npm ci --ignore-scripts || npm install --ignore-scripts
-              if grep -q '"build":' package.json; then
-                echo "Running build step..."
-                npm run build
-              fi
-            fi
-
-            DIST_DIR=""
-            if [ -d "dist" ]; then DIST_DIR="dist";
-            elif [ -d "build" ]; then DIST_DIR="build";
-            elif [ -d "out" ]; then DIST_DIR="out";
-            elif [ -f "index.html" ]; then DIST_DIR=".";
-            fi
-
-            cd ..
-            if [ -n "$DIST_DIR" ]; then
-              cp -r extracted_src/$DIST_DIR/* www/
-            fi
-            npx cap sync android
-          elif [ "$BUILD_TYPE" = "pwa" ]; then
-            echo "Building PWA / TWA project..."
-            npx cap sync android
-          else
+          if [ "$BUILD_TYPE" != "zip" ]; then
             npx cap sync android
           fi
+
+      - name: Build ZIP Project (uploaded code runs here, without any secrets)
+        if: ${{ inputs.build_type == 'zip' }}
+        env:
+          ZIP_DOWNLOAD_URL: ${{ inputs.zip_download_url }}
+        run: |
+          set -e
+          cd workspace
+          WS="$(pwd)"
+
+          if [ -z "$ZIP_DOWNLOAD_URL" ]; then
+            echo "::error::No ZIP source was provided for this build."
+            exit 1
+          fi
+
+          echo "Downloading ZIP project source..."
+          curl -fsSL "$ZIP_DOWNLOAD_URL" -o project_src.zip
+          mkdir -p extracted_src
+          unzip -q project_src.zip -d extracted_src/
+          rm -rf extracted_src/__MACOSX
+
+          # Find the project folder: the shallowest folder holding package.json or index.html
+          ROOT=""
+          BEST=999
+          while IFS= read -r f; do
+            d="$(dirname "$f")"
+            depth="$(printf '%s' "$d" | tr -cd '/' | wc -c)"
+            if [ "$depth" -lt "$BEST" ]; then BEST="$depth"; ROOT="$d"; fi
+          done < <(find extracted_src -maxdepth 4 \( -name node_modules -o -name .git \) -prune -o -type f \( -name package.json -o -name index.html \) -print)
+
+          if [ -z "$ROOT" ]; then
+            echo "::error::The ZIP has no package.json or index.html (searched up to 4 folders deep)."
+            exit 1
+          fi
+          echo "Project folder: $ROOT"
+          cd "$ROOT"
+
+          RAN_BUILD=0
+          if [ -f package.json ]; then
+            echo "Installing dependencies (install scripts are disabled)..."
+            npm ci --ignore-scripts || npm install --ignore-scripts
+            if node -e "const s=require('./package.json').scripts||{};process.exit(s.build?0:1)"; then
+              echo "Running the build step..."
+              npm run build
+              RAN_BUILD=1
+            else
+              echo "No build script found, using the files as they are."
+            fi
+          fi
+
+          OUT=""
+          for candidate in dist build out www public .output/public; do
+            if [ -f "$candidate/index.html" ]; then OUT="$candidate"; break; fi
+          done
+          if [ -z "$OUT" ] && [ "$RAN_BUILD" = "0" ] && [ -f index.html ]; then OUT="."; fi
+
+          if [ -z "$OUT" ]; then
+            echo "::error::No web output with an index.html was found (looked in dist, build, out, www and public). Next.js needs static export (output: 'export'). Projects that need a server cannot run inside an APK."
+            exit 1
+          fi
+
+          echo "Packaging web output from: $OUT"
+          rm -rf "$WS/www"
+          mkdir -p "$WS/www"
+          cp -a "$OUT/." "$WS/www/"
+
+          cd "$WS"
+          npx cap sync android
 
       - name: Report Build Step (Compiling)
         env:
