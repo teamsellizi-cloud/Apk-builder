@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { isAllowedUrl } from "@/lib/pwa-analyzer";
 import { requireAuth, unauthorizedResponse } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { detectSiteIcon } from "@/lib/icon-detect";
 
 export async function POST(req: Request) {
   try {
@@ -69,6 +70,9 @@ export async function POST(req: Request) {
       faviconUrl = new URL("/favicon.ico", url).toString();
     }
 
+    // Download the best icon (manifest / apple-touch / favicon) so it can be built into the APK
+    const iconDataUrl = await detectSiteIcon(url, html).catch(() => null);
+
     // Auto-generate package ID from hostname
     const parsedUrl = new URL(url);
     const hostParts = parsedUrl.hostname.split(".").filter((p) => p !== "www");
@@ -86,6 +90,7 @@ export async function POST(req: Request) {
       title: title || hostParts[0] || "My Web App",
       themeColor: themeColor.startsWith("#") ? themeColor : "#2563eb",
       faviconUrl,
+      iconDataUrl: iconDataUrl || "",
       suggestedPackageId,
       url,
     });

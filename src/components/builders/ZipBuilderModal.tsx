@@ -3,6 +3,7 @@
 import React, { useState, useRef } from "react";
 import Image from "next/image";
 import { AppCustomization, ZipAnalysisResult } from "@/types";
+import { defaultConfig } from "@/lib/default-config";
 import { AppCustomizationForm } from "./AppCustomizationForm";
 import { LivePhonePreview } from "./LivePhonePreview";
 import {
@@ -22,12 +23,14 @@ interface ZipBuilderModalProps {
   isOpen: boolean;
   onClose: () => void;
   onStartBuild: (formData: FormData) => Promise<void>;
+  initial?: { config: AppCustomization; rebuildFrom: string; zipFileName?: string };
 }
 
 export const ZipBuilderModal: React.FC<ZipBuilderModalProps> = ({
   isOpen,
   onClose,
   onStartBuild,
+  initial,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -36,30 +39,14 @@ export const ZipBuilderModal: React.FC<ZipBuilderModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isBuilding, setIsBuilding] = useState(false);
 
-  const [config, setConfig] = useState<AppCustomization>({
-    appName: "My Zip App",
-    packageId: "com.app.zipapp",
-    versionName: "1.0.0",
-    versionCode: 1,
-    splashBgColor: "#0f172a",
-    splashShowSpinner: true,
-    splashDurationMs: 2000,
-    statusBarColor: "#1e293b",
-    navBarColor: "#0f172a",
-    themeColor: "#8b5cf6",
-    orientation: "portrait",
-    fullscreen: false,
-    cleartextTraffic: false,
-    permissions: {
-      internet: true,
-      camera: false,
-      geolocation: false,
-      storage: false,
-      microphone: false,
-      notifications: true,
-      biometrics: false,
-    },
-  });
+  const [config, setConfig] = useState<AppCustomization>(
+    initial?.config ??
+      defaultConfig({
+        appName: "My Zip App",
+        packageId: "com.app.zipapp",
+        themeColor: "#8b5cf6",
+      })
+  );
 
   if (!isOpen) return null;
 
@@ -95,8 +82,10 @@ export const ZipBuilderModal: React.FC<ZipBuilderModalProps> = ({
           const capitalized = cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
           setConfig((prev) => ({
             ...prev,
-            appName: capitalized,
-            packageId: `com.app.${cleanName.toLowerCase().replace(/[^a-z0-9]/g, "")}`,
+            // When editing an existing app, keep its name and package ID
+            appName: initial ? prev.appName : capitalized,
+            packageId: initial ? prev.packageId : `com.app.${cleanName.toLowerCase().replace(/[^a-z0-9]/g, "")}`,
+            iconDataUrl: data.analysis.detectedIconDataUrl || prev.iconDataUrl,
           }));
         } else {
           setErrorMessage(data.analysis.error || "ZIP validation issue detected.");
@@ -112,7 +101,7 @@ export const ZipBuilderModal: React.FC<ZipBuilderModalProps> = ({
   };
 
   const handleBuild = async () => {
-    if (!selectedFile) {
+    if (!selectedFile && !initial) {
       setErrorMessage("Please upload a ZIP file first.");
       return;
     }
@@ -120,7 +109,8 @@ export const ZipBuilderModal: React.FC<ZipBuilderModalProps> = ({
     setIsBuilding(true);
     try {
       const formData = new FormData();
-      formData.append("zipFile", selectedFile);
+      if (selectedFile) formData.append("zipFile", selectedFile);
+      if (initial?.rebuildFrom) formData.append("rebuildFrom", initial.rebuildFrom);
       formData.append("appName", config.appName);
       formData.append("packageId", config.packageId);
       formData.append("versionName", config.versionName);
@@ -186,10 +176,16 @@ export const ZipBuilderModal: React.FC<ZipBuilderModalProps> = ({
                 <UploadCloud className="w-6 h-6" />
               </div>
               <h4 className="text-sm font-bold text-slate-900 dark:text-white">
-                {selectedFile ? selectedFile.name : "Tap or Drag & Drop Project ZIP file here"}
+                {selectedFile
+                  ? selectedFile.name
+                  : initial
+                    ? `Using the saved ZIP${initial.zipFileName ? ` (${initial.zipFileName})` : ""}`
+                    : "Tap or Drag & Drop Project ZIP file here"}
               </h4>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                Supports static HTML/CSS/JS, Vite, React, Vue, Next static export (Max 50MB)
+                {initial
+                  ? "Tap to replace it with a newer ZIP, or just change the settings below."
+                  : "Supports static HTML/CSS/JS, Vite, React, Vue, Next static export (Max 50MB)"}
               </p>
             </div>
 
@@ -299,7 +295,7 @@ export const ZipBuilderModal: React.FC<ZipBuilderModalProps> = ({
             <button
               type="button"
               onClick={handleBuild}
-              disabled={isBuilding || !selectedFile}
+              disabled={isBuilding || (!selectedFile && !initial)}
               className="py-2.5 px-6 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs sm:text-sm font-bold flex items-center gap-2 shadow-md shadow-purple-500/20 active:scale-98 transition-all disabled:opacity-50"
             >
               {isBuilding ? (

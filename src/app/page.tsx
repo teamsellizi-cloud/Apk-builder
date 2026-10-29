@@ -20,7 +20,8 @@ import { LoginModal } from "@/components/modals/LoginModal";
 import { HistoryTab } from "@/components/tabs/HistoryTab";
 import { SettingsTab } from "@/components/tabs/SettingsTab";
 
-import { AppCustomization } from "@/types";
+import { AppCustomization, BuildType } from "@/types";
+import { normalizeConfig } from "@/lib/default-config";
 import { Sparkles, AlertTriangle, ArrowRight } from "lucide-react";
 
 export default function Home() {
@@ -43,6 +44,15 @@ export default function Home() {
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [activeBuilder, setActiveBuilder] = useState<"website" | "zip" | "pwa" | null>(null);
   const [activeProgressBuildId, setActiveProgressBuildId] = useState<string | null>(null);
+
+  // Edit & rebuild: settings of an earlier build, loaded into the matching builder
+  const [rebuild, setRebuild] = useState<{
+    id: string;
+    type: BuildType;
+    sourceUrl?: string;
+    zipFileName?: string;
+    config: AppCustomization;
+  } | null>(null);
 
   // Sync dark mode class on HTML element
   useEffect(() => {
@@ -132,7 +142,7 @@ export default function Home() {
     const data = await res.json();
 
     if (data.success && data.buildId) {
-      setActiveBuilder(null);
+      closeBuilder();
       setActiveProgressBuildId(data.buildId);
       fetchBuildsData();
     } else {
@@ -149,7 +159,7 @@ export default function Home() {
     const data = await res.json();
 
     if (data.success && data.buildId) {
-      setActiveBuilder(null);
+      closeBuilder();
       setActiveProgressBuildId(data.buildId);
       fetchBuildsData();
     } else {
@@ -176,12 +186,52 @@ export default function Home() {
     const data = await res.json();
 
     if (data.success && data.buildId) {
-      setActiveBuilder(null);
+      closeBuilder();
       setActiveProgressBuildId(data.buildId);
       fetchBuildsData();
     } else {
       alert(data.error || "Failed to start build.");
     }
+  };
+
+  // Open an earlier build in its builder so it can be changed and built again
+  const handleEditRebuild = async (buildId: string) => {
+    try {
+      const res = await fetch(`/api/builds/${buildId}`);
+      const data = await res.json();
+      if (!data.success || !data.build) {
+        alert(data.error || "Could not load that build.");
+        return;
+      }
+      const b = data.build;
+      const saved = normalizeConfig(b.config);
+      const config: AppCustomization = {
+        ...saved,
+        appName: b.appName || saved.appName,
+        packageId: b.packageId || saved.packageId,
+        versionName: b.versionName || saved.versionName,
+        // A higher version code lets the new APK install over the old one
+        versionCode: (b.versionCode || saved.versionCode || 1) + 1,
+        // The icon is stored separately on the build record
+        iconDataUrl: saved.iconDataUrl || b.appIconUrl || undefined,
+      };
+      setRebuild({
+        id: b.id,
+        type: b.buildType,
+        sourceUrl: b.sourceUrl || undefined,
+        zipFileName: b.zipFileName || undefined,
+        config,
+      });
+      setActiveProgressBuildId(null);
+      setActiveBuilder(b.buildType === "zip" ? "zip" : b.buildType === "pwa" ? "pwa" : "website");
+    } catch {
+      alert("Network error loading the build.");
+    }
+  };
+
+  const closeBuilder = () => {
+    setActiveBuilder(null);
+    setRebuild(null);
   };
 
   // Handle Download APK
@@ -284,7 +334,7 @@ export default function Home() {
             <HeroCard />
 
             {/* Quick Actions (3 Conversion Cards) */}
-            <QuickActions onSelectMethod={(method) => setActiveBuilder(method)} />
+            <QuickActions onSelectMethod={(method) => { setRebuild(null); setActiveBuilder(method); }} />
 
             {/* Statistics Row */}
             <StatsRow stats={stats} />
@@ -316,7 +366,7 @@ export default function Home() {
               </p>
             </div>
 
-            <QuickActions onSelectMethod={(method) => setActiveBuilder(method)} />
+            <QuickActions onSelectMethod={(method) => { setRebuild(null); setActiveBuilder(method); }} />
 
             <div className="p-6 rounded-3xl bg-white dark:bg-slate-800/90 border border-slate-100 dark:border-slate-800 space-y-3">
               <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
@@ -352,7 +402,14 @@ export default function Home() {
               onDownloadApk={handleDownloadApk}
               onRetryBuild={handleRetryBuild}
               onDeleteBuild={handleDeleteBuild}
-              onOpenNewBuild={(type) => setActiveBuilder(type)}
+              onEditBuild={(id, e) => {
+                e.stopPropagation();
+                handleEditRebuild(id);
+              }}
+              onOpenNewBuild={(type) => {
+                setRebuild(null);
+                setActiveBuilder(type);
+              }}
             />
             <div className="mt-8">
               <FooterNotice />
@@ -379,23 +436,41 @@ export default function Home() {
 
       {/* Website Builder Modal */}
       <WebsiteBuilderModal
+        key={`website-${rebuild?.id ?? "new"}`}
         isOpen={activeBuilder === "website"}
-        onClose={() => setActiveBuilder(null)}
+        onClose={closeBuilder}
         onStartBuild={handleStartWebsiteBuild}
+        initial={
+          rebuild && rebuild.type === "website"
+            ? { sourceUrl: rebuild.sourceUrl, config: rebuild.config, rebuildFrom: rebuild.id }
+            : undefined
+        }
       />
 
       {/* ZIP Builder Modal */}
       <ZipBuilderModal
+        key={`zip-${rebuild?.id ?? "new"}`}
         isOpen={activeBuilder === "zip"}
-        onClose={() => setActiveBuilder(null)}
+        onClose={closeBuilder}
         onStartBuild={handleStartZipBuild}
+        initial={
+          rebuild && rebuild.type === "zip"
+            ? { config: rebuild.config, rebuildFrom: rebuild.id, zipFileName: rebuild.zipFileName }
+            : undefined
+        }
       />
 
       {/* PWA Builder Modal */}
       <PwaBuilderModal
+        key={`pwa-${rebuild?.id ?? "new"}`}
         isOpen={activeBuilder === "pwa"}
-        onClose={() => setActiveBuilder(null)}
+        onClose={closeBuilder}
         onStartBuild={handleStartPwaBuild}
+        initial={
+          rebuild && rebuild.type === "pwa"
+            ? { sourceUrl: rebuild.sourceUrl, config: rebuild.config, rebuildFrom: rebuild.id }
+            : undefined
+        }
       />
 
       {/* Live Build Progress & Log Terminal Modal */}
@@ -404,6 +479,7 @@ export default function Home() {
         isOpen={Boolean(activeProgressBuildId)}
         onClose={() => setActiveProgressBuildId(null)}
         onRefreshList={fetchBuildsData}
+        onEditRebuild={handleEditRebuild}
       />
 
       {/* Single-User Login Modal */}

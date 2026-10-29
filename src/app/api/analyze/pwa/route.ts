@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { analyzePWA } from "@/lib/pwa-analyzer";
 import { requireAuth, unauthorizedResponse } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { detectSiteIcon, fetchImageAsDataUrl } from "@/lib/icon-detect";
 
 export async function POST(req: Request) {
   try {
@@ -24,7 +25,15 @@ export async function POST(req: Request) {
     }
 
     const analysis = await analyzePWA(url);
-    return NextResponse.json({ success: true, analysis });
+    let iconDataUrl: string | null = null;
+    if (analysis.iconLargestUrl) {
+      iconDataUrl = await fetchImageAsDataUrl(analysis.iconLargestUrl).catch(() => null);
+    }
+    if (!iconDataUrl) {
+      iconDataUrl = await detectSiteIcon(url).catch(() => null);
+    }
+
+    return NextResponse.json({ success: true, analysis, iconDataUrl: iconDataUrl || "" });
   } catch (err: unknown) {
     const error = err as Error;
     return NextResponse.json({ error: error.message || "Failed to analyze PWA" }, { status: 500 });

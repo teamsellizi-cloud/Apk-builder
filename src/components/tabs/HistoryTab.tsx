@@ -15,6 +15,7 @@ import {
   XCircle,
   Clock,
   Sparkles,
+  Pencil,
 } from "lucide-react";
 import { BuildType, BuildStatus } from "@/types";
 
@@ -24,6 +25,7 @@ interface HistoryTabProps {
   onDownloadApk: (buildId: string, e: React.MouseEvent) => void;
   onRetryBuild: (buildId: string, e: React.MouseEvent) => void;
   onDeleteBuild: (buildId: string, e: React.MouseEvent) => void;
+  onEditBuild: (buildId: string, e: React.MouseEvent) => void;
   onOpenNewBuild: (type: "website" | "zip" | "pwa") => void;
 }
 
@@ -33,6 +35,7 @@ export const HistoryTab: React.FC<HistoryTabProps> = ({
   onDownloadApk,
   onRetryBuild,
   onDeleteBuild,
+  onEditBuild,
   onOpenNewBuild,
 }) => {
   const [search, setSearch] = useState("");
@@ -230,6 +233,17 @@ export const HistoryTab: React.FC<HistoryTabProps> = ({
                         className="p-2 rounded-xl bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-blue-600 hover:text-white transition-colors"
                       >
                         <RotateCw className="w-4 h-4" />
+                      </button>
+                    )}
+
+                    {!["pending", "queued", "validating", "building", "signing"].includes(build.status) && (
+                      <button
+                        type="button"
+                        onClick={(e) => onEditBuild(build.id, e)}
+                        title="Edit & Rebuild"
+                        className="p-2 rounded-xl bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-blue-600 hover:text-white transition-colors"
+                      >
+                        <Pencil className="w-4 h-4" />
                       </button>
                     )}
 

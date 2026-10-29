@@ -2,20 +2,13 @@
 
 import React, { useRef } from "react";
 import { AppCustomization, AndroidPermissions } from "@/types";
+import { PERMISSION_CATALOG } from "@/lib/permission-catalog";
 import {
   Smartphone,
   Palette,
   Shield,
   Upload,
-  Sparkles,
-  Camera,
-  MapPin,
-  HardDrive,
-  Mic,
-  Bell,
-  Fingerprint,
-  Globe,
-  Sliders,
+  ImageIcon,
 } from "lucide-react";
 
 interface AppCustomizationFormProps {
@@ -41,6 +34,7 @@ export const AppCustomizationForm: React.FC<AppCustomizationFormProps> = ({
   buildType,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const splashInputRef = useRef<HTMLInputElement>(null);
 
   const updateField = <K extends keyof AppCustomization>(field: K, value: AppCustomization[K]) => {
     onChange({ ...config, [field]: value });
@@ -66,6 +60,30 @@ export const AppCustomizationForm: React.FC<AppCustomizationFormProps> = ({
     };
     reader.readAsDataURL(file);
   };
+
+  const handleSplashUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 1_500_000) {
+      alert("Please choose an image smaller than 1.5 MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      onChange({
+        ...config,
+        splashImageMode: "custom",
+        splashImageDataUrl: reader.result as string,
+        splashImageName: file.name,
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const splashMode = config.splashImageMode || "icon";
+  const splashPreviewSrc =
+    splashMode === "custom" ? config.splashImageDataUrl : splashMode === "icon" ? config.iconDataUrl : undefined;
+  const logoSize = config.splashLogoSize || 160;
 
   const autoGeneratePackageId = (name: string) => {
     const clean = name
@@ -164,7 +182,7 @@ export const AppCustomizationForm: React.FC<AppCustomizationFormProps> = ({
         {/* App Icon Upload */}
         <div className="pt-2">
           <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2">
-            App Launcher Icon (PNG / JPEG)
+            App Launcher Icon
           </label>
           <div className="flex items-center gap-3">
             <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 overflow-hidden flex items-center justify-center shrink-0 shadow-sm">
@@ -179,7 +197,7 @@ export const AppCustomizationForm: React.FC<AppCustomizationFormProps> = ({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/png,image/jpeg,image/webp"
+                accept="image/png,image/jpeg,image/webp,image/svg+xml,image/x-icon"
                 onChange={handleIconUpload}
                 className="hidden"
               />
@@ -191,7 +209,7 @@ export const AppCustomizationForm: React.FC<AppCustomizationFormProps> = ({
                 <Upload className="w-3.5 h-3.5" />
                 <span>Upload Custom Icon</span>
               </button>
-              <p className="text-[11px] text-slate-400">Recommended size: 512x512 PNG square</p>
+              <p className="text-[11px] text-slate-400">The logo found on your site or in your ZIP is filled in automatically. Upload another to replace it. Best: 512x512 PNG.</p>
             </div>
           </div>
         </div>
@@ -323,116 +341,157 @@ export const AppCustomizationForm: React.FC<AppCustomizationFormProps> = ({
         </div>
       </div>
 
+      {/* Splash Screen */}
+      <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-800/90 border border-slate-100 dark:border-slate-800 space-y-4">
+        <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-2.5">
+          <ImageIcon className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+          <span>Splash Screen</span>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div
+            style={{ backgroundColor: config.splashBgColor }}
+            className="w-16 h-24 rounded-xl border border-slate-200 dark:border-slate-600 overflow-hidden flex items-center justify-center shrink-0 shadow-sm"
+          >
+            {splashPreviewSrc ? (
+              <img
+                src={splashPreviewSrc}
+                alt="Splash logo"
+                style={{ width: `${Math.round((logoSize / 320) * 100 + 18)}%` }}
+                className="object-contain"
+              />
+            ) : (
+              <span className="text-[9px] text-slate-400">No logo</span>
+            )}
+          </div>
+
+          <div className="flex-1 space-y-2">
+            <div className="grid grid-cols-3 gap-1.5">
+              {([
+                ["icon", "App icon"],
+                ["custom", "Custom"],
+                ["none", "Color only"],
+              ] as const).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => updateField("splashImageMode", mode)}
+                  className={`py-1.5 rounded-lg text-[11px] font-bold border transition-colors ${
+                    splashMode === mode
+                      ? "bg-blue-600 border-blue-600 text-white"
+                      : "bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {splashMode === "custom" && (
+              <div>
+                <input
+                  ref={splashInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                  onChange={handleSplashUpload}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => splashInputRef.current?.click()}
+                  className="py-1.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{config.splashImageName ? "Change splash image" : "Upload splash image"}</span>
+                </button>
+                {config.splashImageName && (
+                  <p className="text-[10px] text-slate-400 mt-1 truncate">{config.splashImageName}</p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+              Splash Background Color
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={config.splashBgColor}
+                onChange={(e) => updateField("splashBgColor", e.target.value)}
+                className="w-9 h-9 rounded-lg cursor-pointer border border-slate-200 dark:border-slate-700 bg-transparent p-0.5"
+              />
+              <input
+                type="text"
+                value={config.splashBgColor}
+                onChange={(e) => updateField("splashBgColor", e.target.value)}
+                className="flex-1 px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 font-mono"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+              Logo Size ({logoSize} dp)
+            </label>
+            <input
+              type="range"
+              min={64}
+              max={280}
+              step={8}
+              value={logoSize}
+              disabled={splashMode === "none"}
+              onChange={(e) => updateField("splashLogoSize", parseInt(e.target.value, 10))}
+              className="w-full accent-blue-600 disabled:opacity-40"
+            />
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-400">
+          Android shows this screen while the app starts and hides it as soon as the app is ready, so its length cannot be set.
+        </p>
+      </div>
+
       {/* 3. Android Permissions */}
       <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-800/90 border border-slate-100 dark:border-slate-800 space-y-4">
         <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-2.5">
           <Shield className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
           <span>Android Permissions</span>
+          <span className="ml-auto text-[10px] font-semibold text-slate-400">
+            {PERMISSION_CATALOG.filter((p) => config.permissions[p.key]).length} on
+          </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-          {/* Internet */}
-          <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/60 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors">
-            <div className="flex items-center gap-2">
-              <Globe className="w-4 h-4 text-blue-500" />
-              <div>
-                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">Internet Access</p>
-                <p className="text-[10px] text-slate-400">INTERNET (Required)</p>
-              </div>
+        {Array.from(new Set(PERMISSION_CATALOG.map((p) => p.group))).map((group) => (
+          <div key={group} className="space-y-2">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{group}</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {PERMISSION_CATALOG.filter((p) => p.group === group).map((p) => (
+                <label
+                  key={p.key}
+                  className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/60 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors"
+                >
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{p.label}</p>
+                    <p className="text-[10px] text-slate-400 truncate">{p.hint}</p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={p.locked ? true : Boolean(config.permissions[p.key])}
+                    disabled={p.locked}
+                    onChange={(e) => updatePermission(p.key, e.target.checked)}
+                    className="w-4 h-4 text-blue-600 rounded cursor-pointer shrink-0"
+                  />
+                </label>
+              ))}
             </div>
-            <input
-              type="checkbox"
-              checked={config.permissions.internet}
-              disabled
-              className="w-4 h-4 text-blue-600 rounded cursor-not-allowed opacity-80"
-            />
-          </label>
-
-          {/* Camera */}
-          <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/60 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors">
-            <div className="flex items-center gap-2">
-              <Camera className="w-4 h-4 text-purple-500" />
-              <div>
-                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">Camera</p>
-                <p className="text-[10px] text-slate-400">android.permission.CAMERA</p>
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={config.permissions.camera}
-              onChange={(e) => updatePermission("camera", e.target.checked)}
-              className="w-4 h-4 text-blue-600 rounded cursor-pointer"
-            />
-          </label>
-
-          {/* Geolocation */}
-          <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/60 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors">
-            <div className="flex items-center gap-2">
-              <MapPin className="w-4 h-4 text-rose-500" />
-              <div>
-                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">Geolocation / GPS</p>
-                <p className="text-[10px] text-slate-400">ACCESS_FINE_LOCATION</p>
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={config.permissions.geolocation}
-              onChange={(e) => updatePermission("geolocation", e.target.checked)}
-              className="w-4 h-4 text-blue-600 rounded cursor-pointer"
-            />
-          </label>
-
-          {/* Storage */}
-          <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/60 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors">
-            <div className="flex items-center gap-2">
-              <HardDrive className="w-4 h-4 text-amber-500" />
-              <div>
-                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">Device Storage</p>
-                <p className="text-[10px] text-slate-400">READ_EXTERNAL_STORAGE</p>
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={config.permissions.storage}
-              onChange={(e) => updatePermission("storage", e.target.checked)}
-              className="w-4 h-4 text-blue-600 rounded cursor-pointer"
-            />
-          </label>
-
-          {/* Microphone */}
-          <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/60 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors">
-            <div className="flex items-center gap-2">
-              <Mic className="w-4 h-4 text-emerald-500" />
-              <div>
-                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">Microphone / Audio</p>
-                <p className="text-[10px] text-slate-400">RECORD_AUDIO</p>
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={config.permissions.microphone}
-              onChange={(e) => updatePermission("microphone", e.target.checked)}
-              className="w-4 h-4 text-blue-600 rounded cursor-pointer"
-            />
-          </label>
-
-          {/* Push Notifications */}
-          <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/60 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors">
-            <div className="flex items-center gap-2">
-              <Bell className="w-4 h-4 text-indigo-500" />
-              <div>
-                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">Push Notifications</p>
-                <p className="text-[10px] text-slate-400">POST_NOTIFICATIONS</p>
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={config.permissions.notifications}
-              onChange={(e) => updatePermission("notifications", e.target.checked)}
-              className="w-4 h-4 text-blue-600 rounded cursor-pointer"
-            />
-          </label>
-        </div>
+          </div>
+        ))}
+        <p className="text-[11px] text-slate-400">
+          Only turn on what your app really needs. Sensitive ones (SMS, calls, install packages, overlay) may be blocked by Google Play.
+        </p>
       </div>
     </div>
   );

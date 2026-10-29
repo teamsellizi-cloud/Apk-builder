@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import Image from "next/image";
 import { AppCustomization, PWAManifestCheck } from "@/types";
+import { defaultConfig } from "@/lib/default-config";
 import { AppCustomizationForm } from "./AppCustomizationForm";
 import { LivePhonePreview } from "./LivePhonePreview";
 import {
@@ -29,45 +30,33 @@ interface PwaBuilderModalProps {
     sourceUrl: string;
     config: AppCustomization;
     manifestJson?: string;
+    rebuildFrom?: string;
   }) => Promise<void>;
+  initial?: { sourceUrl?: string; config: AppCustomization; rebuildFrom: string; useFallback?: boolean };
 }
 
 export const PwaBuilderModal: React.FC<PwaBuilderModalProps> = ({
   isOpen,
   onClose,
   onStartBuild,
+  initial,
 }) => {
-  const [url, setUrl] = useState("https://");
+  const [url, setUrl] = useState(initial?.sourceUrl || "https://");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<PWAManifestCheck | null>(null);
-  const [useCapacitorFallback, setUseCapacitorFallback] = useState(false);
+  const [useCapacitorFallback, setUseCapacitorFallback] = useState(Boolean(initial?.useFallback));
   const [isBuilding, setIsBuilding] = useState(false);
 
-  const [config, setConfig] = useState<AppCustomization>({
-    appName: "My PWA App",
-    packageId: "com.app.pwa",
-    versionName: "1.0.0",
-    versionCode: 1,
-    splashBgColor: "#0f172a",
-    splashShowSpinner: true,
-    splashDurationMs: 2000,
-    statusBarColor: "#1e293b",
-    navBarColor: "#0f172a",
-    themeColor: "#10b981",
-    orientation: "portrait",
-    fullscreen: false,
-    cleartextTraffic: false,
-    permissions: {
-      internet: true,
-      camera: false,
-      geolocation: true,
-      storage: false,
-      microphone: false,
-      notifications: true,
-      biometrics: false,
-    },
-    enableAssetLinks: true,
-  });
+  const [config, setConfig] = useState<AppCustomization>(
+    initial?.config ??
+      defaultConfig({
+        appName: "My PWA App",
+        packageId: "com.app.pwa",
+        themeColor: "#10b981",
+        enableAssetLinks: true,
+        permissions: { geolocation: true } as AppCustomization["permissions"],
+      })
+  );
 
   if (!isOpen) return null;
 
@@ -101,7 +90,7 @@ export const PwaBuilderModal: React.FC<PwaBuilderModalProps> = ({
           themeColor: a.themeColor && a.themeColor.startsWith("#") ? a.themeColor : prev.themeColor,
           statusBarColor: a.themeColor && a.themeColor.startsWith("#") ? a.themeColor : prev.statusBarColor,
           splashBgColor: a.backgroundColor && a.backgroundColor.startsWith("#") ? a.backgroundColor : prev.splashBgColor,
-          iconDataUrl: a.iconLargestUrl || prev.iconDataUrl,
+          iconDataUrl: data.iconDataUrl || prev.iconDataUrl,
         }));
       }
     } catch {
@@ -126,6 +115,7 @@ export const PwaBuilderModal: React.FC<PwaBuilderModalProps> = ({
         sourceUrl: url,
         config,
         manifestJson: analysis?.manifestData ? JSON.stringify(analysis.manifestData) : undefined,
+        rebuildFrom: initial?.rebuildFrom,
       });
     } finally {
       setIsBuilding(false);

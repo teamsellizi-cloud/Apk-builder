@@ -37,8 +37,8 @@ on:
         description: 'Signed Download URL for ZIP Source'
         required: false
         type: string
-      icon_download_url:
-        description: 'Signed Download URL for the app icon'
+      assets_download_url:
+        description: 'Signed Download URL for the app icon and splash image'
         required: false
         default: ''
         type: string
@@ -116,7 +116,7 @@ jobs:
           SOURCE_URL: ${{ inputs.source_url }}
           ZIP_DOWNLOAD_URL: ${{ inputs.zip_download_url }}
           CONFIG_JSON: ${{ inputs.config_json }}
-          ICON_DOWNLOAD_URL: ${{ inputs.icon_download_url }}
+          ASSETS_DOWNLOAD_URL: ${{ inputs.assets_download_url }}
           CALLBACK_URL: ${{ inputs.callback_url }}
           CALLBACK_TOKEN: ${{ inputs.callback_token }}
         run: |
@@ -124,8 +124,10 @@ jobs:
           mkdir -p workspace
           cd workspace
 
-          if [ -n "$ICON_DOWNLOAD_URL" ]; then
-            curl -fsSL "$ICON_DOWNLOAD_URL" -o icon_payload.txt || echo "Warning: could not download the app icon"
+          if [ -n "$ASSETS_DOWNLOAD_URL" ]; then
+            curl -fsSL "$ASSETS_DOWNLOAD_URL" -o assets_payload.json || echo "Warning: could not download the icon and splash images"
+            # ImageMagick converts any logo (png, jpg, webp, ico, svg) into the sizes Android needs
+            sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick librsvg2-bin || echo "Warning: could not install ImageMagick"
           fi
 
           # Run Node.js configurator to create project files and apply full customization
@@ -149,12 +151,13 @@ jobs:
           }
 
           try {
-            if (fs.existsSync('icon_payload.txt')) {
-              const iconPayload = fs.readFileSync('icon_payload.txt', 'utf8').trim();
-              if (iconPayload.startsWith('data:image/')) config.iconDataUrl = iconPayload;
+            if (fs.existsSync('assets_payload.json')) {
+              const assets = JSON.parse(fs.readFileSync('assets_payload.json', 'utf8'));
+              if (assets.iconDataUrl && assets.iconDataUrl.startsWith('data:image/')) config.iconDataUrl = assets.iconDataUrl;
+              if (assets.splashImageDataUrl && assets.splashImageDataUrl.startsWith('data:image/')) config.splashImageDataUrl = assets.splashImageDataUrl;
             }
           } catch (e) {
-            console.warn('Could not read the downloaded app icon');
+            console.warn('Could not read the downloaded icon and splash images');
           }
 
           console.log(`Configuring project: ${appName} (${packageId} v${versionName})`);
@@ -191,8 +194,7 @@ jobs:
           fs.writeFileSync('capacitor.config.json', JSON.stringify(capConfig, null, 2));
           fs.mkdirSync('www', { recursive: true });
 
-          {
-            // Placeholder is always written so `cap add android` passes; ZIP builds overwrite it later
+          if (buildType === 'website') {
             fs.writeFileSync('www/index.html', `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${appName}</title><style>body{font-family:sans-serif;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}</style></head><body><h1>Loading ${appName}...</h1></body></html>`);
           }
 
@@ -205,6 +207,130 @@ jobs:
           const resValuesDir = path.join(androidDir, 'res', 'values');
 
           fs.mkdirSync(resValuesDir, { recursive: true });
+
+          // ---- Launcher icon + splash image (converted with ImageMagick) ----
+          const resDir = path.join(androidDir, 'res');
+          const DENSITIES = [
+            { name: 'mdpi', scale: 1, icon: 48 },
+            { name: 'hdpi', scale: 1.5, icon: 72 },
+            { name: 'xhdpi', scale: 2, icon: 96 },
+            { name: 'xxhdpi', scale: 3, icon: 144 },
+            { name: 'xxxhdpi', scale: 4, icon: 192 },
+          ];
+          const { execFileSync } = require('child_process');
+          let imBin = null;
+          for (const candidate of ['magick', 'convert']) {
+            try { execSync(candidate + ' -version', { stdio: 'ignore' }); imBin = candidate; break; } catch (e) { /* try next */ }
+          }
+          if (!imBin) console.warn('ImageMagick not available: the default launcher icon will be used.');
+
+          function im(args) { execFileSync(imBin, args, { stdio: 'inherit' }); }
+
+          function identify(file) {
+            const out = imBin === 'magick'
+              ? execFileSync('magick', ['identify', '-format', '%w %p\n', file])
+              : execFileSync('identify', ['-format', '%w %p\n', file]);
+            return out.toString().trim().split('\n').map((l) => l.trim().split(/\s+/).map(Number)).filter((a) => a.length === 2 && !isNaN(a[0]));
+          }
+
+          function decodeImage(dataUrl, baseName) {
+            const m = /^data:([^;,]+)(;base64)?,([\s\S]*)$/.exec(dataUrl || '');
+            if (!m) return null;
+            const mime = m[1].toLowerCase();
+            let ext = 'png';
+            if (mime.includes('svg')) ext = 'svg';
+            else if (mime.includes('icon') || mime.includes('ico')) ext = 'ico';
+            else if (mime.includes('jpeg') || mime.includes('jpg')) ext = 'jpg';
+            else if (mime.includes('webp')) ext = 'webp';
+            else if (mime.includes('gif')) ext = 'gif';
+            const buf = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]));
+            const file = baseName + '.' + ext;
+            fs.writeFileSync(file, buf);
+            return { file, ext };
+          }
+
+          // Convert any image to a clean transparent PNG. square=true pads it to 512x512.
+          function makePng(src, out, square) {
+            let settings = [];
+            let input = src.file + '[0]';
+            if (src.ext === 'svg') {
+              settings = ['-background', 'none', '-density', '384'];
+              input = src.file;
+            } else if (src.ext === 'ico') {
+              try {
+                const frames = identify(src.file).sort((a, b) => b[0] - a[0]);
+                input = src.file + '[' + frames[0][1] + ']';
+              } catch (e) { input = src.file + '[0]'; }
+            }
+            const finish = square
+              ? ['-background', 'none', '-alpha', 'on', '-resize', '512x512', '-gravity', 'center', '-extent', '512x512']
+              : ['-background', 'none', '-alpha', 'on', '-resize', '1024x1024>'];
+            im([...settings, input, ...finish, out]);
+          }
+
+          let iconBase = null;
+          if (imBin && config.iconDataUrl && config.iconDataUrl.startsWith('data:image/')) {
+            try {
+              const src = decodeImage(config.iconDataUrl, 'icon_source');
+              if (src) { iconBase = path.resolve('icon_base.png'); makePng(src, iconBase, true); }
+            } catch (err) {
+              console.warn('Could not process the app icon: ' + err.message);
+              iconBase = null;
+            }
+          }
+
+          if (iconBase) {
+            for (const d of DENSITIES) {
+              const dir = path.join(resDir, 'mipmap-' + d.name);
+              fs.mkdirSync(dir, { recursive: true });
+              const px = d.icon + 'x' + d.icon;
+              const c = d.icon / 2;
+              im([iconBase, '-resize', px, path.join(dir, 'ic_launcher.png')]);
+              im([iconBase, '-resize', px, '-alpha', 'set', '(', '-size', px, 'xc:none', '-fill', 'white', '-draw', 'circle ' + c + ',' + c + ' ' + c + ',0', ')', '-compose', 'DstIn', '-composite', path.join(dir, 'ic_launcher_round.png')]);
+            }
+            // The template's adaptive icons would override these PNGs on Android 8+, so remove them
+            fs.rmSync(path.join(resDir, 'mipmap-anydpi-v26'), { recursive: true, force: true });
+            console.log('Launcher icons generated for all screen densities.');
+          }
+
+          // Splash logo: the app icon, a custom image, or none (color only)
+          const splashMode = config.splashImageMode || 'icon';
+          let splashSource = null;
+          if (imBin && splashMode === 'custom' && config.splashImageDataUrl && config.splashImageDataUrl.startsWith('data:image/')) {
+            try {
+              const src = decodeImage(config.splashImageDataUrl, 'splash_source');
+              if (src) { splashSource = path.resolve('splash_base.png'); makePng(src, splashSource, false); }
+            } catch (err) {
+              console.warn('Could not process the splash image: ' + err.message);
+              splashSource = null;
+            }
+          } else if (splashMode === 'icon' && iconBase) {
+            splashSource = iconBase;
+          }
+
+          let hasSplashLogo = false;
+          if (imBin && splashSource) {
+            const logoDp = Math.min(320, Math.max(48, Number(config.splashLogoSize) || 160));
+            for (const d of DENSITIES) {
+              const dir = path.join(resDir, 'drawable-' + d.name);
+              fs.mkdirSync(dir, { recursive: true });
+              const px = Math.round(logoDp * d.scale);
+              im([splashSource, '-resize', px + 'x' + px, path.join(dir, 'splash_logo.png')]);
+            }
+            fs.mkdirSync(path.join(resDir, 'drawable'), { recursive: true });
+            fs.writeFileSync(path.join(resDir, 'drawable', 'splash_screen.xml'), `<?xml version="1.0" encoding="utf-8"?>
+          <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+              <item android:drawable="@color/splashBackgroundColor" />
+              <item>
+                  <bitmap android:gravity="center" android:src="@drawable/splash_logo" />
+              </item>
+          </layer-list>
+          `);
+            hasSplashLogo = true;
+            console.log('Splash logo generated (' + logoDp + 'dp).');
+          }
+          const launchBackground = hasSplashLogo ? '@drawable/splash_screen' : '@color/splashBackgroundColor';
+
 
           // Colors
           const themeColor = config.themeColor || '#2563eb';
@@ -238,22 +364,91 @@ jobs:
                   ${config.fullscreen ? '<item name="android:windowFullscreen">true</item>' : ''}
               </style>
               <style name="AppTheme.NoActionBarLaunch" parent="AppTheme.NoActionBar">
-                  <item name="android:background">@color/splashBackgroundColor</item>
+                  <item name="android:background">${launchBackground}</item>
               </style>
           </resources>`;
           fs.writeFileSync(path.join(resValuesDir, 'styles.xml'), stylesXml);
 
+          // Android 12+ draws its own splash screen, so set its color and logo as well
+          const v31Dir = path.join(resDir, 'values-v31');
+          fs.mkdirSync(v31Dir, { recursive: true });
+          fs.writeFileSync(path.join(v31Dir, 'styles.xml'), `<?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme.NoActionBarLaunch" parent="AppTheme.NoActionBar">
+                  <item name="android:windowSplashScreenBackground">@color/splashBackgroundColor</item>
+                  ${hasSplashLogo ? '<item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_logo</item>' : ''}
+              </style>
+          </resources>
+          `);
+
           // Permissions
           const perms = config.permissions || {};
-          const permissionsTags = [
-            '<uses-permission android:name="android.permission.INTERNET" />',
-            perms.camera ? '<uses-permission android:name="android.permission.CAMERA" />' : '',
-            perms.geolocation ? '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />' : '',
-            perms.storage ? '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />' : '',
-            perms.microphone ? '<uses-permission android:name="android.permission.RECORD_AUDIO" />' : '',
-            perms.notifications ? '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />' : '',
-            perms.biometrics ? '<uses-permission android:name="android.permission.USE_BIOMETRIC" />' : '',
-          ].filter(Boolean).join('\n    ');
+          const PERMISSION_MAP = {
+            networkState: [['ACCESS_NETWORK_STATE']],
+            notifications: [['POST_NOTIFICATIONS']],
+            vibrate: [['VIBRATE']],
+            wakeLock: [['WAKE_LOCK']],
+            camera: [['CAMERA']],
+            microphone: [['RECORD_AUDIO']],
+            audioSettings: [['MODIFY_AUDIO_SETTINGS']],
+            storage: [['READ_EXTERNAL_STORAGE', 32], ['WRITE_EXTERNAL_STORAGE', 32]],
+            mediaLibrary: [['READ_MEDIA_IMAGES'], ['READ_MEDIA_VIDEO'], ['READ_MEDIA_AUDIO']],
+            bodySensors: [['BODY_SENSORS']],
+            activityRecognition: [['ACTIVITY_RECOGNITION']],
+            biometrics: [['USE_BIOMETRIC'], ['USE_FINGERPRINT']],
+            geolocation: [['ACCESS_FINE_LOCATION'], ['ACCESS_COARSE_LOCATION']],
+            backgroundLocation: [['ACCESS_BACKGROUND_LOCATION']],
+            wifiState: [['ACCESS_WIFI_STATE']],
+            bluetooth: [['BLUETOOTH', 30], ['BLUETOOTH_ADMIN', 30], ['BLUETOOTH_CONNECT'], ['BLUETOOTH_SCAN']],
+            nfc: [['NFC']],
+            contacts: [['READ_CONTACTS'], ['WRITE_CONTACTS']],
+            calendar: [['READ_CALENDAR'], ['WRITE_CALENDAR']],
+            accounts: [['GET_ACCOUNTS']],
+            phoneState: [['READ_PHONE_STATE']],
+            callPhone: [['CALL_PHONE']],
+            sms: [['SEND_SMS'], ['READ_SMS'], ['RECEIVE_SMS']],
+            foregroundService: [['FOREGROUND_SERVICE']],
+            bootCompleted: [['RECEIVE_BOOT_COMPLETED']],
+            exactAlarm: [['SCHEDULE_EXACT_ALARM']],
+            overlay: [['SYSTEM_ALERT_WINDOW']],
+            installPackages: [['REQUEST_INSTALL_PACKAGES']],
+            setWallpaper: [['SET_WALLPAPER']],
+          };
+          // Hardware features are marked optional so the APK still installs on devices without them
+          const FEATURE_MAP = {
+            camera: ['android.hardware.camera', 'android.hardware.camera.autofocus'],
+            microphone: ['android.hardware.microphone'],
+            bluetooth: ['android.hardware.bluetooth', 'android.hardware.bluetooth_le'],
+            nfc: ['android.hardware.nfc'],
+            geolocation: ['android.hardware.location', 'android.hardware.location.gps'],
+            phoneState: ['android.hardware.telephony'],
+            callPhone: ['android.hardware.telephony'],
+            sms: ['android.hardware.telephony'],
+          };
+
+          const manifestBefore = fs.readFileSync(manifestPath, 'utf8');
+          const alreadyDeclared = (name) => manifestBefore.includes('android.permission.' + name + '"');
+          const permissionLines = [];
+          if (!alreadyDeclared('INTERNET')) permissionLines.push('<uses-permission android:name="android.permission.INTERNET" />');
+          const addedPermissions = new Set();
+          for (const [key, entries] of Object.entries(PERMISSION_MAP)) {
+            if (!perms[key]) continue;
+            for (const [name, maxSdk] of entries) {
+              if (alreadyDeclared(name) || addedPermissions.has(name)) continue;
+              addedPermissions.add(name);
+              permissionLines.push('<uses-permission android:name="android.permission.' + name + '"' + (maxSdk ? ' android:maxSdkVersion="' + maxSdk + '"' : '') + ' />');
+            }
+          }
+          const featureLines = [];
+          for (const [key, names] of Object.entries(FEATURE_MAP)) {
+            if (!perms[key]) continue;
+            for (const n of names) {
+              const line = '<uses-feature android:name="' + n + '" android:required="false" />';
+              if (!featureLines.includes(line) && !manifestBefore.includes('"' + n + '"')) featureLines.push(line);
+            }
+          }
+          const permissionsTags = [...permissionLines, ...featureLines].join('\n    ');
+          console.log('Android permissions added: ' + (addedPermissions.size ? [...addedPermissions].join(', ') : 'none beyond the defaults'));
 
           // Orientation attribute
           let orientationAttr = 'android:screenOrientation="unspecified"';
@@ -270,24 +465,6 @@ jobs:
           }
           fs.writeFileSync(manifestPath, manifest);
 
-          // Custom Launcher Icon if base64 provided
-          if (config.iconDataUrl && config.iconDataUrl.startsWith('data:image/')) {
-            try {
-              const base64Data = config.iconDataUrl.split(',')[1];
-              const iconBuffer = Buffer.from(base64Data, 'base64');
-              const mipmapDirs = ['mipmap-mdpi', 'mipmap-hdpi', 'mipmap-xhdpi', 'mipmap-xxhdpi', 'mipmap-xxxhdpi'];
-              for (const mDir of mipmapDirs) {
-                const targetDir = path.join(androidDir, 'res', mDir);
-                fs.mkdirSync(targetDir, { recursive: true });
-                fs.writeFileSync(path.join(targetDir, 'ic_launcher.png'), iconBuffer);
-                fs.writeFileSync(path.join(targetDir, 'ic_launcher_round.png'), iconBuffer);
-              }
-              console.log('Custom launcher icons written across all mipmap densities.');
-            } catch (err) {
-              console.warn('Failed to write launcher icon:', err);
-            }
-          }
-
           console.log('Native Android customization injected successfully.');
           EOF
 
@@ -301,14 +478,6 @@ jobs:
             unzip -q project_src.zip -d extracted_src/
 
             cd extracted_src
-            # If the zip has a single top-level folder, step into it
-            if [ ! -f package.json ] && [ ! -f index.html ]; then
-              ENTRIES=$(ls -A | wc -l)
-              if [ "$ENTRIES" -eq 1 ] && [ -d "$(ls -A | head -n 1)" ]; then
-                cd "$(ls -A | head -n 1)"
-              fi
-            fi
-
             if [ -f "package.json" ]; then
               echo "Installing dependencies with npm ci --ignore-scripts..."
               npm ci --ignore-scripts || npm install --ignore-scripts
@@ -319,24 +488,16 @@ jobs:
             fi
 
             DIST_DIR=""
-            if [ -f "dist/index.html" ]; then DIST_DIR="dist";
-            elif [ -f "build/index.html" ]; then DIST_DIR="build";
-            elif [ -f "out/index.html" ]; then DIST_DIR="out";
-            elif [ -f "www/index.html" ]; then DIST_DIR="www";
-            elif [ -f "public/index.html" ] && [ ! -f package.json ]; then DIST_DIR="public";
+            if [ -d "dist" ]; then DIST_DIR="dist";
+            elif [ -d "build" ]; then DIST_DIR="build";
+            elif [ -d "out" ]; then DIST_DIR="out";
             elif [ -f "index.html" ]; then DIST_DIR=".";
             fi
 
-            if [ -z "$DIST_DIR" ]; then
-              echo "ERROR: No index.html found in the ZIP or its build output (dist/build/out/www)."
-              exit 1
+            cd ..
+            if [ -n "$DIST_DIR" ]; then
+              cp -r extracted_src/$DIST_DIR/* www/
             fi
-
-            SRC_ABS="$(pwd)/$DIST_DIR"
-            cd "$GITHUB_WORKSPACE/workspace"
-            rm -rf www && mkdir -p www
-            cp -r "$SRC_ABS"/. www/
-            rm -rf www/node_modules
             npx cap sync android
           elif [ "$BUILD_TYPE" = "pwa" ]; then
             echo "Building PWA / TWA project..."

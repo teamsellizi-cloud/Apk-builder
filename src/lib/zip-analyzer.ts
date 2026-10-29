@@ -1,5 +1,6 @@
 import JSZip from "jszip";
 import { ZipAnalysisResult } from "@/types";
+import { bytesToImageDataUrl } from "@/lib/icon-detect";
 
 const MAX_ZIP_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
 const MAX_EXTRACTED_SIZE_BYTES = 250 * 1024 * 1024; // 250MB
@@ -162,6 +163,13 @@ export async function analyzeZipBuffer(
       result.error =
         "No 'index.html' or 'package.json' found. Ensure your zip contains an index.html file or a standard web project.";
     }
+
+    // Find the project's own logo so the APK uses it as the launcher icon
+    const icon = await detectIconInZip(loadedZip, paths).catch(() => null);
+    if (icon) {
+      result.detectedIconDataUrl = icon.dataUrl;
+      result.detectedIconPath = icon.path;
+    }
   } catch (err: unknown) {
     const error = err as Error;
     result.isSafe = false;
@@ -169,4 +177,71 @@ export async function analyzeZipBuffer(
   }
 
   return result;
+}
+
+
+// ---- Icon detection inside the ZIP -------------------------------------------------
+const ICON_NAME_RANKS: [RegExp, number][] = [
+  [/(^|\/)apple-touch-icon[^/]*\.(png|jpe?g|webp)$/i, 100],
+  [/(^|\/)(android-chrome|icon|logo)[-_]?512[^/]*\.(png|jpe?g|webp)$/i, 95],
+  [/(^|\/)(android-chrome|icon|logo)[-_]?(384|256|192)[^/]*\.(png|jpe?g|webp)$/i, 85],
+  [/(^|\/)(app[-_]?icon|adaptive[-_]?icon|ic_launcher)[^/]*\.(png|jpe?g|webp)$/i, 80],
+  [/(^|\/)icon[^/]*\.(png|jpe?g|webp)$/i, 70],
+  [/(^|\/)logo[^/]*\.(png|jpe?g|webp)$/i, 60],
+  [/(^|\/)favicon[^/]*\.(png|jpe?g|webp)$/i, 40],
+  [/(^|\/)favicon\.ico$/i, 10],
+];
+
+export async function detectIconInZip(
+  zip: JSZip,
+  paths: string[]
+): Promise<{ dataUrl: string; path: string } | null> {
+  const usable = paths.filter((p) => !/(^|\/)(node_modules|\.git|__macosx)\//i.test(p));
+  const lower = new Map(usable.map((p) => [p.toLowerCase(), p]));
+  const candidates: { path: string; score: number }[] = [];
+
+  // 1) Icons listed in a web manifest
+  for (const mp of usable.filter((p) => /(^|\/)(manifest\.json|manifest\.webmanifest|site\.webmanifest)$/i.test(p)).slice(0, 4)) {
+    try {
+      const text = await zip.file(mp)!.async("string");
+      const manifest = JSON.parse(text) as { icons?: { src?: string; sizes?: string; purpose?: string }[] };
+      const dir = mp.includes("/") ? mp.slice(0, mp.lastIndexOf("/") + 1) : "";
+      for (const icon of manifest.icons || []) {
+        if (!icon.src || /^https?:/i.test(icon.src) || (icon.purpose || "").includes("monochrome")) continue;
+        const rel = icon.src.replace(/^\.?\//, "");
+        const found = lower.get((dir + rel).toLowerCase()) || lower.get(`public/${rel}`.toLowerCase()) || lower.get(rel.toLowerCase());
+        if (!found) continue;
+        const side = Math.max(...[...(icon.sizes || "").matchAll(/(\d+)\s*x\s*(\d+)/gi)].map((m) => Math.max(+m[1], +m[2])), 0);
+        candidates.push({ path: found, score: 110 + Math.min(side, 512) / 8 });
+      }
+    } catch {
+      // ignore broken manifest
+    }
+  }
+
+  // 2) Common icon file names (shallower paths win ties)
+  for (const p of usable) {
+    for (const [re, rank] of ICON_NAME_RANKS) {
+      if (re.test(p)) {
+        candidates.push({ path: p, score: rank - p.split("/").length * 2 });
+        break;
+      }
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const seen = new Set<string>();
+  for (const c of candidates) {
+    if (seen.has(c.path)) continue;
+    seen.add(c.path);
+    if (seen.size > 5) break;
+    try {
+      const bytes = await zip.file(c.path)!.async("uint8array");
+      const dataUrl = bytesToImageDataUrl(bytes);
+      if (dataUrl) return { dataUrl, path: c.path };
+    } catch {
+      // try next
+    }
+  }
+  return null;
 }

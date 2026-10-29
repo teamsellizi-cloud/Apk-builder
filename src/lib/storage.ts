@@ -52,6 +52,31 @@ export async function uploadZipToStorage(
   };
 }
 
+// Copy a stored ZIP to a new object so a rebuild keeps working even if the original build is deleted.
+export async function copyZipInStorage(
+  sourceStoragePath: string,
+  newBuildId: string,
+  fileName: string
+): Promise<{ storagePath: string }> {
+  if (!sourceStoragePath.startsWith("supabase:")) {
+    throw new Error("Invalid storage path format.");
+  }
+  const raw = sourceStoragePath.replace("supabase:", "");
+  const slashIdx = raw.indexOf("/");
+  const bucket = raw.substring(0, slashIdx);
+  const fromPath = raw.substring(slashIdx + 1);
+  const safeName = fileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
+  const toPath = `zips/${newBuildId}-${safeName}`;
+
+  const { error } = await getSupabaseAdmin().storage.from(bucket).copy(fromPath, toPath);
+  if (error) {
+    throw new Error(
+      "The original ZIP is no longer in storage (it may have been cleaned up). Upload the ZIP again to rebuild."
+    );
+  }
+  return { storagePath: `supabase:${bucket}/${toPath}` };
+}
+
 export async function createApkSignedUploadUrl(
   buildId: string,
   fileName: string

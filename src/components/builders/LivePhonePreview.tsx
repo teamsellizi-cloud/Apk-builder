@@ -159,28 +159,20 @@ export const LivePhonePreview: React.FC<LivePhonePreviewProps> = ({
             style={{ backgroundColor: config.splashBgColor || "#ffffff" }}
             className="flex-1 flex flex-col items-center justify-center p-6 text-center transition-colors"
           >
-            {config.iconDataUrl ? (
-              <div className="relative w-20 h-20 rounded-3xl overflow-hidden shadow-lg mb-4">
-                <img src={config.iconDataUrl} alt="Splash icon" className="w-full h-full object-cover" />
-              </div>
-            ) : (
-              <div className="w-20 h-20 rounded-3xl bg-blue-600 text-white flex items-center justify-center text-3xl shadow-lg mb-4">
-                🚀
-              </div>
-            )}
-            <h4
-              style={{
-                color:
-                  config.splashBgColor === "#ffffff" || config.splashBgColor === "#f8fafc" ? "#0f172a" : "#ffffff",
-              }}
-              className="text-base font-extrabold tracking-tight mb-2"
-            >
-              {config.appName || "My App"}
-            </h4>
+            {(() => {
+              const mode = config.splashImageMode || "icon";
+              const src = mode === "custom" ? config.splashImageDataUrl : mode === "icon" ? config.iconDataUrl : undefined;
+              if (mode === "none") return null;
+              const px = Math.round(((config.splashLogoSize || 160) / 160) * 80);
+              return src ? (
+                <img src={src} alt="Splash logo" style={{ width: px, height: px }} className="object-contain mb-4" />
+              ) : (
+                <div style={{ width: px, height: px }} className="rounded-3xl bg-blue-600 text-white flex items-center justify-center text-3xl shadow-lg mb-4">
+                  🚀
+                </div>
+              );
+            })()}
 
-            {config.splashShowSpinner && (
-              <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mt-4" />
-            )}
           </div>
         )}
 

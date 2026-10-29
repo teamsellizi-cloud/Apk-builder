@@ -5,7 +5,8 @@ import { desc, eq, sql } from "drizzle-orm";
 import { executeBuildJob } from "@/lib/build-runner";
 import { ensureDefaultUserAndSettings, getCurrentUser, requireAuth, unauthorizedResponse } from "@/lib/auth";
 import { AppCustomization, BuildType } from "@/types";
-import { uploadZipToStorage, isSupabaseConfigured } from "@/lib/storage";
+import { uploadZipToStorage, copyZipInStorage, isSupabaseConfigured } from "@/lib/storage";
+import { defaultConfig } from "@/lib/default-config";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function GET(req: Request) {
@@ -125,6 +126,7 @@ export async function POST(req: Request) {
     let zipFileName: string | undefined;
     let zipFileSize: number | undefined;
     let zipStoragePath: string | undefined;
+    let rebuildFrom = "";
 
     const buildId = `bld_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
@@ -136,6 +138,7 @@ export async function POST(req: Request) {
       versionCode = parseInt((formData.get("versionCode") as string) || "1", 10);
       buildType = (formData.get("buildType") as BuildType) || "zip";
       sourceUrl = (formData.get("sourceUrl") as string) || "";
+      rebuildFrom = (formData.get("rebuildFrom") as string) || "";
 
       const configStr = formData.get("config") as string;
       config = configStr ? JSON.parse(configStr) : null;
@@ -166,6 +169,34 @@ export async function POST(req: Request) {
       buildType = body.buildType || "website";
       sourceUrl = body.sourceUrl || "";
       config = body.config;
+      rebuildFrom = body.rebuildFrom || "";
+    }
+
+    // Edit & rebuild: reuse the stored ZIP and settings of an earlier build
+    if (rebuildFrom) {
+      const sources = await db.select().from(builds).where(eq(builds.id, rebuildFrom)).limit(1);
+      if (sources.length === 0) {
+        return NextResponse.json({ error: "The build you are editing no longer exists." }, { status: 404 });
+      }
+      const source = sources[0];
+      if (!sourceUrl && source.sourceUrl) sourceUrl = source.sourceUrl;
+      if (buildType === "zip" && !zipStoragePath && source.zipStoragePath) {
+        if (!isSupabaseConfigured()) {
+          return NextResponse.json({ error: "Supabase Storage credentials missing." }, { status: 500 });
+        }
+        try {
+          const copied = await copyZipInStorage(source.zipStoragePath, buildId, source.zipFileName || "project.zip");
+          zipStoragePath = copied.storagePath;
+          zipFileName = source.zipFileName || undefined;
+          zipFileSize = source.zipFileSize || undefined;
+        } catch (copyErr) {
+          return NextResponse.json({ error: (copyErr as Error).message }, { status: 410 });
+        }
+      }
+    }
+
+    if (buildType === "zip" && !zipStoragePath) {
+      return NextResponse.json({ error: "Please upload a ZIP file first." }, { status: 400 });
     }
 
     if (!appName || !packageId) {
@@ -173,30 +204,7 @@ export async function POST(req: Request) {
     }
 
     if (!config) {
-      config = {
-        appName,
-        packageId,
-        versionName,
-        versionCode,
-        splashBgColor: "#0f172a",
-        splashShowSpinner: true,
-        splashDurationMs: 2000,
-        statusBarColor: "#1e293b",
-        navBarColor: "#0f172a",
-        themeColor: "#2563eb",
-        orientation: "portrait",
-        fullscreen: false,
-        cleartextTraffic: false,
-        permissions: {
-          internet: true,
-          camera: false,
-          geolocation: false,
-          storage: false,
-          microphone: false,
-          notifications: true,
-          biometrics: false,
-        },
-      };
+      config = defaultConfig({ appName, packageId, versionName, versionCode });
     }
 
     const origin = req.headers.get("origin") || req.headers.get("host") || "http://localhost:3000";

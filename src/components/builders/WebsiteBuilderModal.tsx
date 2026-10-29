@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import Image from "next/image";
 import { AppCustomization } from "@/types";
+import { defaultConfig } from "@/lib/default-config";
 import { AppCustomizationForm } from "./AppCustomizationForm";
 import { LivePhonePreview } from "./LivePhonePreview";
 import { Globe, ArrowRight, Loader2, Sparkles, X, CheckCircle2, AlertCircle } from "lucide-react";
@@ -18,43 +19,30 @@ interface WebsiteBuilderModalProps {
     buildType: "website";
     sourceUrl: string;
     config: AppCustomization;
+    rebuildFrom?: string;
   }) => Promise<void>;
+  initial?: { sourceUrl?: string; config: AppCustomization; rebuildFrom: string };
 }
 
 export const WebsiteBuilderModal: React.FC<WebsiteBuilderModalProps> = ({
   isOpen,
   onClose,
   onStartBuild,
+  initial,
 }) => {
-  const [url, setUrl] = useState("https://");
+  const [url, setUrl] = useState(initial?.sourceUrl || "https://");
   const [isInspecting, setIsInspecting] = useState(false);
   const [inspectMessage, setInspectMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [isBuilding, setIsBuilding] = useState(false);
 
-  const [config, setConfig] = useState<AppCustomization>({
-    appName: "My Website App",
-    packageId: "com.app.webapp",
-    versionName: "1.0.0",
-    versionCode: 1,
-    splashBgColor: "#0f172a",
-    splashShowSpinner: true,
-    splashDurationMs: 2000,
-    statusBarColor: "#1e293b",
-    navBarColor: "#0f172a",
-    themeColor: "#2563eb",
-    orientation: "portrait",
-    fullscreen: false,
-    cleartextTraffic: false,
-    permissions: {
-      internet: true,
-      camera: false,
-      geolocation: true,
-      storage: false,
-      microphone: false,
-      notifications: true,
-      biometrics: false,
-    },
-  });
+  const [config, setConfig] = useState<AppCustomization>(
+    initial?.config ??
+      defaultConfig({
+        appName: "My Website App",
+        packageId: "com.app.webapp",
+        permissions: { geolocation: true } as AppCustomization["permissions"],
+      })
+  );
 
   if (!isOpen) return null;
 
@@ -82,11 +70,13 @@ export const WebsiteBuilderModal: React.FC<WebsiteBuilderModalProps> = ({
           packageId: data.suggestedPackageId || prev.packageId,
           themeColor: data.themeColor || prev.themeColor,
           statusBarColor: data.themeColor || prev.statusBarColor,
-          iconDataUrl: data.faviconUrl || prev.iconDataUrl,
+          iconDataUrl: data.iconDataUrl || prev.iconDataUrl,
         }));
         setInspectMessage({
           type: "success",
-          text: `Auto-filled details from "${data.title || url}"!`,
+          text: data.iconDataUrl
+            ? `Auto-filled details and logo from "${data.title || url}"!`
+            : `Auto-filled details from "${data.title || url}" (no usable logo found, upload one below).`,
         });
       } else {
         setInspectMessage({
@@ -120,6 +110,7 @@ export const WebsiteBuilderModal: React.FC<WebsiteBuilderModalProps> = ({
         buildType: "website",
         sourceUrl: url,
         config,
+        rebuildFrom: initial?.rebuildFrom,
       });
     } finally {
       setIsBuilding(false);

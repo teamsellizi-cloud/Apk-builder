@@ -18,6 +18,30 @@ export interface AndroidPermissions {
   microphone: boolean;
   notifications: boolean;
   biometrics: boolean;
+  // Extra permissions (older builds do not have these keys, so they default to off)
+  backgroundLocation?: boolean;
+  mediaLibrary?: boolean;
+  vibrate?: boolean;
+  wakeLock?: boolean;
+  networkState?: boolean;
+  wifiState?: boolean;
+  bluetooth?: boolean;
+  nfc?: boolean;
+  contacts?: boolean;
+  calendar?: boolean;
+  phoneState?: boolean;
+  callPhone?: boolean;
+  sms?: boolean;
+  foregroundService?: boolean;
+  bootCompleted?: boolean;
+  exactAlarm?: boolean;
+  audioSettings?: boolean;
+  bodySensors?: boolean;
+  activityRecognition?: boolean;
+  installPackages?: boolean;
+  overlay?: boolean;
+  setWallpaper?: boolean;
+  accounts?: boolean;
 }
 
 export interface AppCustomization {
@@ -28,8 +52,12 @@ export interface AppCustomization {
   iconDataUrl?: string;
   iconName?: string;
   splashBgColor: string;
-  splashShowSpinner: boolean;
-  splashDurationMs: number;
+  splashShowSpinner: boolean; // legacy field, no longer shown (Android hides the launch screen when the app is ready)
+  splashDurationMs: number; // legacy field, see above
+  splashImageMode?: "icon" | "custom" | "none";
+  splashImageDataUrl?: string;
+  splashImageName?: string;
+  splashLogoSize?: number; // dp, 48-320
   statusBarColor: string;
   navBarColor: string;
   themeColor: string;
@@ -77,6 +105,8 @@ export interface ZipAnalysisResult {
   frameworkDetected?: string;
   buildScriptDetected: boolean;
   buildCommand?: string;
+  detectedIconDataUrl?: string;
+  detectedIconPath?: string;
   distDirDetected?: string;
   error?: string;
   fileTree: string[];

@@ -24,6 +24,7 @@ interface BuildProgressModalProps {
   isOpen: boolean;
   onClose: () => void;
   onRefreshList: () => void;
+  onEditRebuild?: (buildId: string) => void;
 }
 
 interface BuildData {
@@ -53,6 +54,7 @@ export const BuildProgressModal: React.FC<BuildProgressModalProps> = ({
   isOpen,
   onClose,
   onRefreshList,
+  onEditRebuild,
 }) => {
   const [buildData, setBuildData] = useState<BuildData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -453,6 +455,16 @@ export const BuildProgressModal: React.FC<BuildProgressModalProps> = ({
                 className="px-4 py-2 rounded-xl text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition-colors"
               >
                 Cancel Build
+              </button>
+            )}
+
+            {onEditRebuild && buildData && !["pending", "queued", "validating", "building", "signing"].includes(buildData.status) && (
+              <button
+                type="button"
+                onClick={() => onEditRebuild(buildData.id)}
+                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-colors"
+              >
+                Edit & rebuild
               </button>
             )}
 
