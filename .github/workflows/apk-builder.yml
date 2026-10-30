@@ -37,6 +37,11 @@ on:
         description: 'Signed Download URL for ZIP Source'
         required: false
         type: string
+      native_expo:
+        description: 'Build an Expo project as a native Android app (true/false)'
+        required: false
+        default: 'false'
+        type: string
       assets_download_url:
         description: 'Signed Download URL for the app icon and splash image'
         required: false
@@ -66,7 +71,7 @@ jobs:
   compile-untrusted-apk:
     name: Compile Android Project & Bytecode
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 50
 
     steps:
       - name: Checkout Repository
@@ -108,6 +113,7 @@ jobs:
             -d '{"status":"building","progress":20,"step":"Initializing native Android project structure"}'
 
       - name: Generate Project, Apply Customizations & Extract Sources
+        if: ${{ inputs.native_expo != 'true' }}
         env:
           BUILD_ID: ${{ inputs.build_id }}
           BUILD_TYPE: ${{ inputs.build_type }}
@@ -477,7 +483,7 @@ jobs:
           fi
 
       - name: Build ZIP Project (uploaded code runs here, without any secrets)
-        if: ${{ inputs.build_type == 'zip' }}
+        if: ${{ inputs.build_type == 'zip' && inputs.native_expo != 'true' }}
         env:
           ZIP_DOWNLOAD_URL: ${{ inputs.zip_download_url }}
         run: |
@@ -558,7 +564,136 @@ jobs:
             -H "Authorization: Bearer $CALLBACK_TOKEN" \
             -d '{"status":"building","progress":60,"step":"Compiling release Android bytecode with Gradle"}'
 
+      - name: Build Native Expo App (uploaded code runs here, without any secrets)
+        if: ${{ inputs.build_type == 'zip' && inputs.native_expo == 'true' }}
+        env:
+          ZIP_DOWNLOAD_URL: ${{ inputs.zip_download_url }}
+          APP_NAME: ${{ inputs.app_name }}
+          PACKAGE_ID: ${{ inputs.package_id }}
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          CI: '1'
+          EXPO_NO_TELEMETRY: '1'
+        run: |
+          set -e
+          WS="$GITHUB_WORKSPACE/workspace"
+          mkdir -p "$WS"
+          cd "$WS"
+
+          if [ -z "$ZIP_DOWNLOAD_URL" ]; then
+            echo "::error::No ZIP source was provided for this build."
+            exit 1
+          fi
+
+          echo "Downloading ZIP project source..."
+          curl -fsSL "$ZIP_DOWNLOAD_URL" -o project_src.zip
+          mkdir -p extracted_src
+          unzip -q project_src.zip -d extracted_src/
+          rm -rf extracted_src/__MACOSX
+
+          # Find the project folder: the shallowest folder holding package.json
+          ROOT=""
+          BEST=999
+          while IFS= read -r f; do
+            d="$(dirname "$f")"
+            depth="$(printf '%s' "$d" | tr -cd '/' | wc -c)"
+            if [ "$depth" -lt "$BEST" ]; then BEST="$depth"; ROOT="$d"; fi
+          done < <(find extracted_src -maxdepth 4 \( -name node_modules -o -name .git \) -prune -o -type f -name package.json -print)
+
+          if [ -z "$ROOT" ]; then
+            echo "::error::The ZIP has no package.json (searched up to 4 folders deep)."
+            exit 1
+          fi
+          echo "Project folder: $ROOT"
+          cd "$ROOT"
+          ROOT_ABS="$(pwd)"
+
+          if ! node -e "const p=require('./package.json');const d={...p.dependencies,...p.devDependencies};process.exit(d.expo?0:1)"; then
+            echo "::error::This project does not depend on Expo, so it cannot be built as a native Expo app. Turn the native option off."
+            exit 1
+          fi
+
+          echo "Installing dependencies (install scripts are disabled)..."
+          if [ -f package-lock.json ]; then
+            npm ci --ignore-scripts --legacy-peer-deps || npm install --ignore-scripts --legacy-peer-deps
+          else
+            npm install --ignore-scripts --legacy-peer-deps
+          fi
+
+          # Add any expo-* package the code imports but package.json does not list (versions picked by Expo)
+          node - << 'NODE'
+          const fs = require('fs'), path = require('path');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const have = { ...pkg.dependencies, ...pkg.devDependencies };
+          const skip = new Set(['node_modules', '.git', 'dist', 'android', 'ios', '.expo']);
+          const found = new Set();
+          (function walk(dir) {
+            for (const f of fs.readdirSync(dir)) {
+              if (skip.has(f)) continue;
+              const p = path.join(dir, f);
+              const s = fs.statSync(p);
+              if (s.isDirectory()) walk(p);
+              else if (/\.(tsx?|jsx?)$/.test(f)) {
+                const text = fs.readFileSync(p, 'utf8');
+                for (const m of text.matchAll(/(?:from|require\()\s*['"](expo-[a-z0-9-]+)(?:\/[^'"]*)?['"]/g)) found.add(m[1]);
+              }
+            }
+          })('.');
+          const missing = [...found].filter((n) => !have[n]);
+          fs.writeFileSync('/tmp/missing_expo.txt', missing.join(' '));
+          console.log('Expo packages to add: ' + (missing.join(', ') || 'none'));
+          NODE
+          MISSING="$(cat /tmp/missing_expo.txt)"
+          if [ -n "$MISSING" ]; then
+            npx expo install $MISSING -- --ignore-scripts --legacy-peer-deps
+          fi
+
+          echo "Generating the native Android project (expo prebuild)..."
+          npx expo prebuild --platform android --no-install --clean
+
+          # Apply the name, package ID and version chosen in the builder form
+          node - << 'NODE'
+          const fs = require('fs');
+          const env = process.env;
+          const gradlePath = 'android/app/build.gradle';
+          let gradle = fs.readFileSync(gradlePath, 'utf8');
+          const pkg = (env.PACKAGE_ID || '').trim();
+          if (/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/i.test(pkg)) {
+            gradle = gradle.replace(/applicationId\s+['"][^'"]+['"]/, 'applicationId "' + pkg + '"');
+          }
+          const code = parseInt(env.VERSION_CODE, 10);
+          if (code > 0) gradle = gradle.replace(/versionCode\s+\d+/, 'versionCode ' + code);
+          const vName = (env.VERSION_NAME || '').trim();
+          if (/^[0-9A-Za-z._-]+$/.test(vName)) gradle = gradle.replace(/versionName\s+['"][^'"]*['"]/, 'versionName "' + vName + '"');
+          fs.writeFileSync(gradlePath, gradle);
+
+          const stringsPath = 'android/app/src/main/res/values/strings.xml';
+          const name = (env.APP_NAME || '').trim();
+          if (name && fs.existsSync(stringsPath)) {
+            const esc = name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, "\\'").replace(/"/g, '\\"');
+            let xml = fs.readFileSync(stringsPath, 'utf8');
+            xml = xml.replace(/(<string name="app_name">)[^<]*(<\/string>)/, (m, open, close) => open + esc + close);
+            fs.writeFileSync(stringsPath, xml);
+          }
+          console.log('Applied app name, package ID and version.');
+          NODE
+
+          echo "Compiling the release APK with Gradle (this takes a while)..."
+          cd android
+          chmod +x ./gradlew
+          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
+
+          APK="$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)"
+          if [ -z "$APK" ]; then
+            echo "::error::Gradle finished but no APK was produced."
+            exit 1
+          fi
+          mkdir -p "$WS/android/app/build/outputs/apk/release"
+          cp "$APK" "$WS/android/app/build/outputs/apk/release/app-release.apk"
+          echo "Native APK ready: $APK"
+
       - name: Compile Release APK with Gradle
+        if: ${{ inputs.native_expo != 'true' }}
         run: |
           set -e
           cd workspace/android

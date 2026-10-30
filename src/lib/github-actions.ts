@@ -10,6 +10,7 @@ export interface TriggerWorkflowParams {
   sourceUrl?: string;
   zipDownloadUrl?: string;
   assetsDownloadUrl?: string;
+  nativeExpo?: boolean;
   apkUploadUrl: string;
   configJson: string;
   callbackUrl: string;
@@ -117,6 +118,7 @@ export async function triggerGitHubBuild(
             source_url: params.sourceUrl || "",
             zip_download_url: params.zipDownloadUrl || "",
             assets_download_url: params.assetsDownloadUrl || "",
+            native_expo: params.nativeExpo ? "true" : "false",
             apk_upload_url: params.apkUploadUrl,
             config_json: params.configJson,
             callback_url: params.callbackUrl,

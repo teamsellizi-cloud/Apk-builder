@@ -200,6 +200,7 @@ export async function executeBuildJob(params: StartBuildParams) {
       sourceUrl,
       zipDownloadUrl,
       assetsDownloadUrl,
+      nativeExpo: buildType === "zip" && Boolean(config.nativeExpo),
       apkUploadUrl,
       configJson: JSON.stringify(runnerConfig),
       callbackUrl,

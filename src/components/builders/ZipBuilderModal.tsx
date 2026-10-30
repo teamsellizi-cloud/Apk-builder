@@ -285,6 +285,25 @@ export const ZipBuilderModal: React.FC<ZipBuilderModalProps> = ({
               </div>
             )}
 
+            {(analysis?.isExpo || config.nativeExpo) && (
+              <label className="flex items-start gap-3 p-3 rounded-2xl border border-violet-200 dark:border-violet-800 bg-violet-50/60 dark:bg-violet-950/30 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(config.nativeExpo)}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, nativeExpo: e.target.checked }))}
+                  className="mt-0.5 w-4 h-4 rounded shrink-0"
+                />
+                <div>
+                  <p className="text-xs font-bold text-slate-900 dark:text-white">Build as a native Android app</p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    For Expo projects. Uses real native modules, so music can keep playing in the background and the app can read
+                    device media. Takes longer (about 10-20 minutes). The icon, splash screen and permissions come from the
+                    project&apos;s app.config; name, package ID and version come from this form.
+                  </p>
+                </div>
+              </label>
+            )}
+
             {errorMessage && (
               <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 flex items-center gap-2 text-xs">
                 <AlertCircle className="w-4 h-4 shrink-0" />

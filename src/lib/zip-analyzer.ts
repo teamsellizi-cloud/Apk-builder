@@ -130,7 +130,11 @@ export async function analyzeZipBuffer(
 
         const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
 
-        if (deps["vite"]) {
+        if (deps["expo"]) {
+          result.frameworkDetected = "Expo (React Native)";
+          result.distDirDetected = "dist";
+          result.isExpo = true;
+        } else if (deps["vite"]) {
           result.frameworkDetected = "Vite App";
           result.distDirDetected = "dist";
         } else if (deps["next"]) {

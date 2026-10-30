@@ -54,6 +54,7 @@ export interface AppCustomization {
   splashBgColor: string;
   splashShowSpinner: boolean; // legacy field, no longer shown (Android hides the launch screen when the app is ready)
   splashDurationMs: number; // legacy field, see above
+  nativeExpo?: boolean; // ZIP of an Expo project: build a native Android app instead of a web view
   splashImageMode?: "icon" | "custom" | "none";
   splashImageDataUrl?: string;
   splashImageName?: string;
@@ -105,6 +106,7 @@ export interface ZipAnalysisResult {
   frameworkDetected?: string;
   buildScriptDetected: boolean;
   buildCommand?: string;
+  isExpo?: boolean;
   detectedIconDataUrl?: string;
   detectedIconPath?: string;
   distDirDetected?: string;
