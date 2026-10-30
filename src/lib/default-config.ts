@@ -10,6 +10,7 @@ export function defaultConfig(overrides: Partial<AppCustomization> = {}): AppCus
     splashShowSpinner: false,
     splashDurationMs: 2000,
     splashImageMode: "icon",
+    pushEnabled: false,
     splashLogoSize: 160,
     statusBarColor: "#1e293b",
     navBarColor: "#0f172a",

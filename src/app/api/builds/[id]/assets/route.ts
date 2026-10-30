@@ -27,7 +27,7 @@ export async function GET(
     }
 
     const build = records[0];
-    let cfg: { iconDataUrl?: string; splashImageDataUrl?: string } = {};
+    let cfg: { iconDataUrl?: string; splashImageDataUrl?: string; googleServicesJson?: string } = {};
     try {
       cfg = JSON.parse(build.configJson || "{}");
     } catch {
@@ -39,6 +39,7 @@ export async function GET(
       {
         iconDataUrl: icon.startsWith("data:image/") ? icon : "",
         splashImageDataUrl: (cfg.splashImageDataUrl || "").startsWith("data:image/") ? cfg.splashImageDataUrl : "",
+        googleServicesJson: typeof cfg.googleServicesJson === "string" ? cfg.googleServicesJson : "",
       },
       { headers: { "Cache-Control": "no-store" } }
     );

@@ -163,6 +163,7 @@ jobs:
               const assets = JSON.parse(fs.readFileSync('assets_payload.json', 'utf8'));
               if (assets.iconDataUrl && assets.iconDataUrl.startsWith('data:image/')) config.iconDataUrl = assets.iconDataUrl;
               if (assets.splashImageDataUrl && assets.splashImageDataUrl.startsWith('data:image/')) config.splashImageDataUrl = assets.splashImageDataUrl;
+              if (assets.googleServicesJson && typeof assets.googleServicesJson === 'string') config.googleServicesJson = assets.googleServicesJson;
             }
           } catch (e) {
             console.warn('Could not read the downloaded icon and splash images');
@@ -170,15 +171,38 @@ jobs:
 
           console.log(`Configuring project: ${appName} (${packageId} v${versionName})`);
 
+          // Push notifications (Firebase Cloud Messaging)
+          if (config.pushEnabled && !config.googleServicesJson) {
+            console.log('::error::Push notifications are turned on but no google-services.json was provided.');
+            process.exit(1);
+          }
+          const pushEnabled = Boolean(config.pushEnabled && config.googleServicesJson);
+          if (pushEnabled) {
+            let googleServices;
+            try {
+              googleServices = JSON.parse(config.googleServicesJson);
+            } catch (e) {
+              console.log('::error::google-services.json is not valid JSON. Download it again from the Firebase console.');
+              process.exit(1);
+            }
+            const fcmPackages = (googleServices.client || [])
+              .map((c) => c && c.client_info && c.client_info.android_client_info && c.client_info.android_client_info.package_name)
+              .filter(Boolean);
+            if (!fcmPackages.includes(packageId)) {
+              console.log('::error::google-services.json is for package ' + (fcmPackages.join(', ') || '(none)') + ' but this app uses ' + packageId + '. Use the same package ID in Firebase and in the builder.');
+              process.exit(1);
+            }
+          }
+          const capDeps = { '@capacitor/core': '^6.0.0', '@capacitor/android': '^6.0.0' };
+          if (pushEnabled) capDeps['@capacitor/push-notifications'] = '^6.0.0';
+
+
           // 1. Initialize Capacitor Base Package
           fs.writeFileSync('package.json', JSON.stringify({
             name: packageId.replace(/[^a-z0-9]/gi, '-').toLowerCase(),
             version: versionName,
             private: true,
-            dependencies: {
-              '@capacitor/core': '^6.0.0',
-              '@capacitor/android': '^6.0.0'
-            }
+            dependencies: capDeps
           }, null, 2));
 
           execSync('npm install --no-audit --no-fund', { stdio: 'inherit' });
@@ -391,6 +415,7 @@ jobs:
 
           // Permissions
           const perms = config.permissions || {};
+          if (pushEnabled) perms.notifications = true;
           const PERMISSION_MAP = {
             networkState: [['ACCESS_NETWORK_STATE']],
             notifications: [['POST_NOTIFICATIONS']],
@@ -463,6 +488,74 @@ jobs:
           if (config.orientation === 'portrait') orientationAttr = 'android:screenOrientation="portrait"';
           else if (config.orientation === 'landscape') orientationAttr = 'android:screenOrientation="landscape"';
           else if (config.orientation === 'sensorPortrait') orientationAttr = 'android:screenOrientation="sensorPortrait"';
+
+          // ---- Push notifications: Firebase config + notification permission + tap-to-open ----
+          if (pushEnabled) {
+            fs.writeFileSync(path.join('android', 'app', 'google-services.json'), config.googleServicesJson);
+
+            let mainActivityPath = null;
+            (function find(dir) {
+              for (const f of fs.readdirSync(dir)) {
+                const p = path.join(dir, f);
+                if (fs.statSync(p).isDirectory()) find(p);
+                else if (f === 'MainActivity.java') mainActivityPath = p;
+              }
+            })(path.join(androidDir, 'java'));
+            if (!mainActivityPath) {
+              console.log('::error::MainActivity.java was not found in the generated Android project.');
+              process.exit(1);
+            }
+            const pkgMatch = /^\s*package\s+([\w.]+);/m.exec(fs.readFileSync(mainActivityPath, 'utf8'));
+            let allowedHost = '';
+            try { allowedHost = new URL(sourceUrl).hostname; } catch (e) { allowedHost = ''; }
+
+            fs.writeFileSync(mainActivityPath, `package ${pkgMatch ? pkgMatch[1] : packageId};
+
+          import android.Manifest;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import androidx.core.app.ActivityCompat;
+          import androidx.core.content.ContextCompat;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              private static final String ALLOWED_HOST = "${allowedHost}";
+
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  if (Build.VERSION.SDK_INT >= 33
+                          && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                      ActivityCompat.requestPermissions(this, new String[] { Manifest.permission.POST_NOTIFICATIONS }, 4201);
+                  }
+                  openLinkFromIntent(getIntent());
+              }
+
+              @Override
+              protected void onNewIntent(Intent intent) {
+                  super.onNewIntent(intent);
+                  openLinkFromIntent(intent);
+              }
+
+              // Tapping a notification that carries a "url" value opens that page, but only on this app's own site.
+              private void openLinkFromIntent(Intent intent) {
+                  if (intent == null || ALLOWED_HOST.isEmpty() || getBridge() == null) return;
+                  final String link = intent.getStringExtra("url");
+                  if (link == null) return;
+                  Uri uri = Uri.parse(link);
+                  String host = uri.getHost();
+                  if (!"https".equals(uri.getScheme()) || host == null) return;
+                  if (!host.equals(ALLOWED_HOST) && !host.endsWith("." + ALLOWED_HOST)) return;
+                  getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(link));
+              }
+          }
+          `);
+            console.log('Push notifications enabled (Firebase config added).');
+          }
+
 
           // Patch AndroidManifest.xml
           let manifest = fs.readFileSync(manifestPath, 'utf8');
@@ -669,6 +762,16 @@ jobs:
 
           const stringsPath = 'android/app/src/main/res/values/strings.xml';
           const name = (env.APP_NAME || '').trim();
+          // Store native libraries compressed so the APK stays well under the 50 MB storage limit
+          if (!/useLegacyPackaging\s+true/.test(gradle)) {
+            gradle = gradle.replace(/\nandroid\s*\{/, (m) => m + '\n    packagingOptions {\n        jniLibs {\n            useLegacyPackaging true\n        }\n    }');
+            fs.writeFileSync(gradlePath, gradle);
+          }
+          const propsPath = 'android/gradle.properties';
+          let props = fs.existsSync(propsPath) ? fs.readFileSync(propsPath, 'utf8') : '';
+          props = props.replace(/^expo\.useLegacyPackaging=.*$/gm, '').replace(/\n{3,}/g, '\n\n').trimEnd() + '\nexpo.useLegacyPackaging=true\n';
+          fs.writeFileSync(propsPath, props);
+
           if (name && fs.existsSync(stringsPath)) {
             const esc = name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, "\\'").replace(/"/g, '\\"');
             let xml = fs.readFileSync(stringsPath, 'utf8');
@@ -759,6 +862,7 @@ jobs:
               -H "Authorization: Bearer $CALLBACK_TOKEN" \
               -d '{"status":"failed","progress":0,"step":"Signing failed","error":"Missing ANDROID_KEYSTORE_BASE64 or ANDROID_KEYSTORE_PASSWORD in GitHub repository secrets. Please configure signing keys in repository settings."}'
 
+            touch reported_failure
             exit 1
           fi
 
@@ -792,10 +896,35 @@ jobs:
           APK_SIZE=$(stat -c%s final-signed-release.apk)
           APK_SHA256=$(sha256sum final-signed-release.apk | awk '{print $1}')
 
+          APK_MB=$(( (APK_SIZE + 1048575) / 1048576 ))
+
+          # The free Supabase plan accepts files up to 50 MB (52428800 bytes)
+          if [ "$APK_SIZE" -gt 52428800 ]; then
+            echo "ERROR: The signed APK is ${APK_MB} MB, above the 50 MB limit of free Supabase storage."
+            touch reported_failure
+            curl -s -X POST "$CALLBACK_URL" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $CALLBACK_TOKEN" \
+              -d "{\"status\":\"failed\",\"progress\":0,\"step\":\"APK too large to store\",\"error\":\"The signed APK is ${APK_MB} MB but free Supabase storage accepts files up to 50 MB. Make the app smaller (fewer libraries, smaller images) or upgrade the Supabase plan.\"}"
+            exit 1
+          fi
+
           echo "Uploading signed APK directly to Supabase storage (${APK_SIZE} bytes)..."
-          curl -f -s -X PUT "$APK_UPLOAD_URL" \
+          HTTP_CODE=$(curl -s -o upload_response.txt -w "%{http_code}" -X PUT "$APK_UPLOAD_URL" \
             -H "Content-Type: application/vnd.android.package-archive" \
-            --data-binary "@final-signed-release.apk"
+            --data-binary "@final-signed-release.apk" || true)
+
+          if [ "${HTTP_CODE:-000}" -lt 200 ] || [ "${HTTP_CODE:-000}" -ge 300 ]; then
+            echo "ERROR: Supabase storage rejected the upload with HTTP ${HTTP_CODE:-000}."
+            head -c 400 upload_response.txt || true
+            echo
+            touch reported_failure
+            curl -s -X POST "$CALLBACK_URL" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $CALLBACK_TOKEN" \
+              -d "{\"status\":\"failed\",\"progress\":0,\"step\":\"Upload failed\",\"error\":\"Supabase storage rejected the APK upload (HTTP ${HTTP_CODE:-000}). Check the storage buckets and the 50 MB file size limit.\"}"
+            exit 1
+          fi
 
           echo "Direct upload to Supabase storage complete."
 
@@ -811,6 +940,8 @@ jobs:
           CALLBACK_URL: ${{ inputs.callback_url }}
           CALLBACK_TOKEN: ${{ inputs.callback_token }}
         run: |
+          # A more specific message may already have been sent by the failing step
+          if [ -f reported_failure ]; then exit 0; fi
           curl -s -X POST "$CALLBACK_URL" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $CALLBACK_TOKEN" \

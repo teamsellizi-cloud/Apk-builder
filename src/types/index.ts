@@ -54,6 +54,9 @@ export interface AppCustomization {
   splashBgColor: string;
   splashShowSpinner: boolean; // legacy field, no longer shown (Android hides the launch screen when the app is ready)
   splashDurationMs: number; // legacy field, see above
+  pushEnabled?: boolean; // Firebase Cloud Messaging push notifications (web view builds)
+  googleServicesJson?: string; // contents of google-services.json
+  googleServicesName?: string;
   nativeExpo?: boolean; // ZIP of an Expo project: build a native Android app instead of a web view
   splashImageMode?: "icon" | "custom" | "none";
   splashImageDataUrl?: string;

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef } from "react";
+import React, { useMemo, useRef } from "react";
 import { AppCustomization, AndroidPermissions } from "@/types";
 import { PERMISSION_CATALOG } from "@/lib/permission-catalog";
 import {
@@ -9,6 +9,7 @@ import {
   Shield,
   Upload,
   ImageIcon,
+  Bell,
 } from "lucide-react";
 
 interface AppCustomizationFormProps {
@@ -35,6 +36,7 @@ export const AppCustomizationForm: React.FC<AppCustomizationFormProps> = ({
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const splashInputRef = useRef<HTMLInputElement>(null);
+  const googleServicesRef = useRef<HTMLInputElement>(null);
 
   const updateField = <K extends keyof AppCustomization>(field: K, value: AppCustomization[K]) => {
     onChange({ ...config, [field]: value });
@@ -78,6 +80,33 @@ export const AppCustomizationForm: React.FC<AppCustomizationFormProps> = ({
       });
     };
     reader.readAsDataURL(file);
+  };
+
+  const pushPackages = useMemo<string[] | null>(() => {
+    if (!config.googleServicesJson) return [];
+    try {
+      const parsed = JSON.parse(config.googleServicesJson);
+      return ((parsed.client || []) as { client_info?: { android_client_info?: { package_name?: string } } }[])
+        .map((c) => c?.client_info?.android_client_info?.package_name)
+        .filter((n): n is string => Boolean(n));
+    } catch {
+      return null;
+    }
+  }, [config.googleServicesJson]);
+
+  const handleGoogleServicesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (file.size > 200_000) {
+      alert("That file is too large to be a google-services.json.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      onChange({ ...config, googleServicesJson: String(reader.result || ""), googleServicesName: file.name });
+    };
+    reader.readAsText(file);
   };
 
   const splashMode = config.splashImageMode || "icon";
@@ -453,6 +482,83 @@ export const AppCustomizationForm: React.FC<AppCustomizationFormProps> = ({
           Android shows this screen while the app starts and hides it as soon as the app is ready, so its length cannot be set.
         </p>
       </div>
+
+      {/* Push Notifications */}
+      {!config.nativeExpo && (
+        <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-800/90 border border-slate-100 dark:border-slate-800 space-y-3">
+          <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-2.5">
+            <Bell className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+            <span>Push Notifications</span>
+            <label className="ml-auto flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={Boolean(config.pushEnabled)}
+                onChange={(e) => updateField("pushEnabled", e.target.checked)}
+                className="w-4 h-4 rounded"
+              />
+              On
+            </label>
+          </div>
+
+          {config.pushEnabled && (
+            <>
+              <ol className="text-[11px] text-slate-500 dark:text-slate-400 space-y-1 list-decimal pl-4">
+                <li>In the free Firebase console, create a project and add an <b>Android app</b> whose package name is exactly <span className="font-mono">{config.packageId}</span>.</li>
+                <li>Download <b>google-services.json</b> and upload it below.</li>
+                <li>Send messages from Firebase console → Messaging, or from your own server. Add a <span className="font-mono">url</span> value in the message data to open a page of your site when it is tapped.</li>
+              </ol>
+
+              <input
+                ref={googleServicesRef}
+                type="file"
+                accept=".json,application/json"
+                onChange={handleGoogleServicesUpload}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => googleServicesRef.current?.click()}
+                className="py-1.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>{config.googleServicesName ? "Replace google-services.json" : "Upload google-services.json"}</span>
+              </button>
+
+              {config.googleServicesJson && pushPackages === null && (
+                <p className="text-[11px] text-rose-600">This file is not valid JSON. Download it again from Firebase.</p>
+              )}
+              {config.googleServicesJson && pushPackages && pushPackages.length > 0 && pushPackages.includes(config.packageId) && (
+                <p className="text-[11px] text-emerald-600">{config.googleServicesName || "google-services.json"} matches this package ID.</p>
+              )}
+              {config.googleServicesJson && pushPackages && pushPackages.length > 0 && !pushPackages.includes(config.packageId) && (
+                <p className="text-[11px] text-rose-600">
+                  This file is for <span className="font-mono">{pushPackages.join(", ")}</span>. Change the package ID above to match it, or add this package ID to your Firebase project.
+                </p>
+              )}
+              {!config.googleServicesJson && (
+                <p className="text-[11px] text-amber-600">Upload google-services.json, or the build will fail with a clear message.</p>
+              )}
+
+              <details className="text-[11px] text-slate-500 dark:text-slate-400">
+                <summary className="cursor-pointer font-semibold">Save each phone&apos;s token on your own server (optional)</summary>
+                <pre className="mt-2 p-2 rounded-lg bg-slate-900 text-slate-200 overflow-x-auto whitespace-pre text-[10px]">{`const push = window.Capacitor?.Plugins?.PushNotifications;
+if (push) {
+  push.addListener("registration", (t) => {
+    fetch("/api/push/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: t.value }),
+    });
+  });
+  push.requestPermissions().then((r) => {
+    if (r.receive === "granted") push.register();
+  });
+}`}</pre>
+              </details>
+            </>
+          )}
+        </div>
+      )}
 
       {/* 3. Android Permissions */}
       <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-800/90 border border-slate-100 dark:border-slate-800 space-y-4">

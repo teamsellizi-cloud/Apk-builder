@@ -176,10 +176,11 @@ export async function executeBuildJob(params: StartBuildParams) {
   let runnerConfig = config;
   const hasIconData = typeof config.iconDataUrl === "string" && config.iconDataUrl.startsWith("data:");
   const hasSplashData = typeof config.splashImageDataUrl === "string" && config.splashImageDataUrl.startsWith("data:");
-  if (hasIconData || hasSplashData) {
+  const hasPushConfig = typeof config.googleServicesJson === "string" && config.googleServicesJson.length > 0;
+  if (hasIconData || hasSplashData || hasPushConfig) {
     const { token: assetsToken } = generateSignedDownloadToken(id, 120);
     assetsDownloadUrl = `${originUrl || "http://localhost:3000"}/api/builds/${id}/assets?token=${assetsToken}`;
-    runnerConfig = { ...config, iconDataUrl: undefined, splashImageDataUrl: undefined };
+    runnerConfig = { ...config, iconDataUrl: undefined, splashImageDataUrl: undefined, googleServicesJson: undefined };
   }
 
   // Dispatch build to GitHub Actions
